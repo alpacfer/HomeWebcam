@@ -48,7 +48,7 @@ export const CONFIG = {
      * a decimated hand is a cursor that visibly steps. See ADR 0006.
      */
     everyNFrames: 1,
-    maxHands: 2,
+    maxHands: 1,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5,
     /** Flip if left/right read backwards at the station. See detectors/hands.ts. */
@@ -59,10 +59,10 @@ export const CONFIG = {
     enabled: true,
     /**
      * Run the face pass every Nth camera frame. 2 halves its cost and still
-     * updates at 30 Hz, which is far more than a head moving at hallway speed
-     * needs. The skipped frames reuse the previous result, so a face never
-     * blinks out. Raise it if the HUD shows the face pass eating the budget.
-     * Verify at the station.
+     * updates at 15 Hz on the station's 30 fps camera, far more than a head
+     * moving at hallway speed needs. The skipped frames reuse the previous
+     * result, so a face never blinks out. Raise it if the HUD shows the face
+     * pass eating the budget.
      */
     everyNFrames: 2,
     maxFaces: 2,
@@ -72,17 +72,80 @@ export const CONFIG = {
      *
      * This swaps the plain face detector for FaceLandmarker rather than adding
      * to it. FaceLandmarker finds faces itself, so running both would pay for
-     * face detection twice and buy nothing. Turn it off for the cheap
-     * presence-only path on a weaker GPU. See ADR 0007.
+     * face detection twice and buy nothing. See ADR 0007.
+     *
+     * Off, so the face pass is BlazeFace: presence, a box and a track id. The
+     * mesh cost 13-15 ms a pass with someone in frame against BlazeFace's 3.5,
+     * and nothing outside the debug overlay and HUD read a single point of it.
+     * Turn it back on to tune against expression or head pose. See ADR 0012.
      */
-    features: true,
+    features: false,
     /** No-op until an IdentityDetector is implemented. See detectors/identity.ts. */
     identifyPeople: false,
   },
 
   cursor: {
-    /** Lower = smoother and laggier. Verify at the station. */
-    smoothingHz: 3,
+    /**
+     * The 1€ filter, which trades a fixed cutoff for one that opens up with
+     * speed. See src/lib/one-euro.ts and ADR 0013.
+     *
+     * Tune in the order the paper gives: set beta to 0, hold a hand still, and
+     * lower minCutoffHz until the jitter goes; then move a hand fast and raise
+     * beta until the lag goes. Symptoms map one-to-one - jitter at rest wants a
+     * lower minCutoffHz, lag when moving wants a higher beta.
+     */
+    filter: {
+      /**
+       * 3 Hz is not a compromise here, it is a floor: it is exactly what the
+       * fixed filter this replaced used, so at a standstill the cursor is no
+       * jitterier than the station has always been, and every speed above a
+       * standstill is strictly better. Measured hand speeds at the station run
+       * 0.06 u/s at the tenth percentile to 1.8 at the ninety-ninth.
+       *
+       * The paper's suggested 1 Hz starting point was tried and was wrong for
+       * this: it put 105 ms of lag on a slow, careful aim - twice the filter it
+       * replaced - because a hand lining up a menu tile spends most of its time
+       * below 0.3 u/s. See ADR 0013.
+       */
+      minCutoffHz: 3,
+      /**
+       * Chosen against the measured distribution rather than by feel: 30 puts
+       * the median aim (0.3 u/s) at 13 ms of lag and a brisk wave (1.8) at 3 ms,
+       * while a standstill stays at the 3 Hz floor. Verify at the station.
+       */
+      beta: 30,
+      /** The paper's value. It says this one rarely needs changing. */
+      derivativeCutoffHz: 1,
+      /**
+       * Faster than the cutoff's own derivative, because this one steers
+       * prediction and has to notice a hand reversing direction. 6 Hz is a
+       * 27 ms time constant against the 159 ms of the 1 Hz estimate.
+       * Verify at the station.
+       */
+      predictionCutoffHz: 6,
+    },
+
+    /**
+     * Latency compensation. Measured capture-to-display on the station is 32 ms
+     * and the detector adds ~17 ms, so ~50 ms of the hand's past is on screen.
+     * Aiming 35 ms ahead recovers most of it without betting the whole amount
+     * on the hand continuing in a straight line.
+     *
+     * Prediction is off below `fadeInFrom` because overshoot at a standstill
+     * reads as jitter and would cancel a dwell. Verify at the station.
+     */
+    prediction: {
+      horizonMs: 35,
+      /**
+       * Below this, in units/second, the hand counts as holding still and gets
+       * no prediction at all. 0.15 sits under the tenth percentile of measured
+       * aiming speed, so a deliberate slow aim is helped rather than sitting in
+       * a dead band, while a hand parked over a tile is left alone.
+       */
+      fadeInFrom: 0.15,
+      fadeInTo: 1.0,
+    },
+
     /** ms of holding still over a target before it activates. */
     dwellMs: 800,
     /** Normalized movement that cancels a dwell. Verify at the station. */
