@@ -1,0 +1,122 @@
+/*
+ * The mirror is the interface. Everything drawn on top is deliberately quiet:
+ * thin strokes, monospace, no chrome. A visitor should see themselves first.
+ */
+
+:root {
+  --ink: rgba(255, 255, 255, 0.92);
+  --ink-dim: rgba(255, 255, 255, 0.55);
+  --scrim: rgba(10, 12, 16, 0.55);
+  --danger: rgb(255, 138, 128);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #05070a;
+  color: var(--ink);
+  font:
+    14px / 1.5 ui-monospace,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace;
+}
+
+/* Kiosk: no text selection, no long-press menus, no accidental zoom. */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  cursor: none;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+}
+
+#camera,
+#overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#camera {
+  object-fit: cover;
+  /* Hidden until frames arrive, so the station never shows a black flash. */
+  opacity: 0;
+  transition: opacity 400ms ease-out;
+}
+
+#camera.is-mirrored {
+  transform: scaleX(-1);
+}
+
+body.is-live #camera {
+  opacity: 1;
+}
+
+/* Vignette: pulls the eye to the centre and keeps overlay text legible. */
+#stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 45%, rgba(0, 0, 0, 0.55) 100%);
+}
+
+#hud {
+  position: absolute;
+  left: 24px;
+  bottom: 24px;
+  z-index: 2;
+  max-width: 42ch;
+  padding: 12px 16px;
+  white-space: pre-wrap;
+  color: var(--ink-dim);
+  background: var(--scrim);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+}
+
+#hud.hud--hidden {
+  display: none;
+}
+
+#hud.hud--error {
+  left: 50%;
+  top: 50%;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+  max-width: 52ch;
+  color: var(--danger);
+  border-color: rgba(255, 138, 128, 0.35);
+}
+
+#boot {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-content: center;
+  color: var(--ink-dim);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: opacity 400ms ease-out;
+}
+
+body.is-live #boot {
+  opacity: 0;
+  pointer-events: none;
+}

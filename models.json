@@ -1,0 +1,26 @@
+{
+  "$comment": "Single source of truth for model assets. Read by scripts/fetch-models.mjs and by src/perception/models.ts. All URLs verified reachable 2026-09-04.",
+  "destDir": "public/models",
+  "models": {
+    "gestureRecognizer": {
+      "file": "gesture_recognizer.task",
+      "url": "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+      "bytes": 8373440
+    },
+    "faceDetector": {
+      "file": "blaze_face_short_range.tflite",
+      "url": "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+      "bytes": 229746
+    },
+    "faceLandmarker": {
+      "file": "face_landmarker.task",
+      "url": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      "bytes": 3758596
+    },
+    "poseLandmarker": {
+      "file": "pose_landmarker_lite.task",
+      "url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+      "bytes": 5777746
+    }
+  }
+}

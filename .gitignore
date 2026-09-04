@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+
+# Fetched at install time, never committed (see npm run models / postinstall).
+public/models/
+public/mediapipe/
+
+# Captured photos and enrolled face data are personal data. Never commit.
+captures/
+data/faces/
+
+CLAUDE.local.md

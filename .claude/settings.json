@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run check)",
+      "Bash(npm run test)",
+      "Bash(npm run fix)",
+      "Bash(npm run build)",
+      "Bash(npm run models)",
+      "Bash(npm run screenshot)",
+      "Bash(npm run screenshot -- *)",
+      "Bash(npx vitest run*)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx biome check*)",
+      "Bash(node scripts/*)",
+      "Bash(fuser -v /dev/video0)",
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)"
+    ]
+  }
+}

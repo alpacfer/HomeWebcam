@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=HomeWebcam
+Comment=Start the interactive mirror
+Exec=/home/alejandro/code/HomeWebcam/start.sh
+Path=/home/alejandro/code/HomeWebcam
+Icon=camera-web
+Terminal=true
+Categories=Development;

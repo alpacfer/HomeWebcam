@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>HomeWebcam</title>
+  </head>
+  <body>
+    <main id="stage">
+      <!-- playsinline + muted are what let the stream autoplay without a gesture. -->
+      <video id="camera" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <p id="boot">waking up the mirror</p>
+      <pre id="hud"></pre>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

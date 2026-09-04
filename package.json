@@ -1,0 +1,29 @@
+{
+  "name": "homewebcam",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "check": "biome check . && tsc --noEmit && vitest run",
+    "fix": "biome check --write .",
+    "test": "vitest run",
+    "models": "node scripts/fetch-models.mjs",
+    "postinstall": "node scripts/sync-wasm.mjs",
+    "screenshot": "node scripts/screenshot.mjs"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.12",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
+  }
+}
