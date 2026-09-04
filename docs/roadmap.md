@@ -13,24 +13,20 @@ it shows information, takes pictures, and recognises the people who live here.
   dwell-to-activate.
 - Debug overlay and HUD, toggled with `d`.
 - Screenshot harness, so UI changes can be verified without a person present.
+- Debug bridge and puppet: one typed snapshot of the running station, scripted
+  hands, and `npm run verify` for the whole interaction set in about half a
+  minute. See [ADR 0011](adr/0011-puppet-perception.md).
+- Top mode menu with mirrored-coordinate dwell targets.
+- Picture mode: Victory shortcut, Open Palm countdown, and local JPEG capture.
+- Wordless glass interface: icon-only modes, a hand-carried reveal light, and a
+  spring-mounted menu that a passing hand can brush. See
+  [ADR 0010](adr/0010-reactive-glass-menu.md).
 
-## Next: something to navigate
+## Next: game mode
 
-The cursor points at nothing. This is the blocking gap.
-
-- A `Target` concept: a rectangle plus a callback, in mirrored screen space.
-- Hit-testing the cursor against targets; dwell activates the one under it.
-- One real panel to prove it end to end. A clock and the weather is enough.
-- Hover and activation feedback that reads from three metres away.
-
-## Then: take a picture
-
-The first feature with an outcome the visitor keeps.
-
-- A gesture or a dwell target starts a countdown.
-- Full-resolution grab from the video element, not the display canvas.
-- Where does it go, and who can see it? Decide before building. Writes land in
-  `captures/`, which is gitignored.
+The second top-level mode is visible but deliberately unavailable until there is a real game behind
+it. Add its interaction without changing the Picture-mode gesture shortcuts. It needs a gesture
+badge of its own, and the interface is wordless, so the gesture has to be one an icon can say.
 
 ## Then: recognise us
 

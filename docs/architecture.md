@@ -14,8 +14,11 @@
                                      │      PerceptionFrame  ◄── the only contract
                                      │             │
                                      │             ├──> interaction/cursor.ts ──> CursorState
+                                     │             ├──> interaction/menu-physics.ts
+                                     │             │        ──> MenuMotion
                                      │             │
-                                     └─────────────┴──> ui/overlay.ts, ui/hud.ts
+                                     └─────────────┴──> ui/overlay.ts, ui/hud.ts,
+                                                        ui/experience.ts
 ```
 
 `app.ts` owns the loop and is the only file that knows about all four layers.
@@ -55,6 +58,18 @@ and reaching left moves it left. See [ADR 0004](adr/0004-mirrored-screen-space.m
 The overlay canvas therefore needs no CSS transform. Its pixels line up with the
 mirrored video underneath it because the numbers arrive pre-flipped.
 
+## The debug layer
+
+`src/debug/` is the only part of the codebase that exists for us rather than for a visitor, and it
+is gated behind `import.meta.env.DEV`. `bridge.ts` publishes one typed snapshot on
+`window.__station`; `puppet.ts` produces `PerceptionFrame`s from a script, and `app.ts` takes its
+frame from the puppet instead of the detectors while one is armed.
+
+That seam is the perception contract doing its job: a puppet is just another source of the only type
+anything above it consumes. It is also why the station marks itself while one is driving - the layers
+above genuinely cannot tell, so a person looking at a screenshot must be able to. See
+[ADR 0011](adr/0011-puppet-perception.md).
+
 ## Everything runs on-device
 
 No frame, embedding or face ever leaves the machine. Models are served from our
@@ -75,7 +90,23 @@ Opening the UI from another device on the LAN will fail: a plain-HTTP origin
 that is not localhost cannot use `getUserMedia`. That needs real HTTPS with a
 certificate the client trusts. Deferred until there is a reason to want it.
 
-## What is not built yet
+## Visitor interface
 
-The interface itself. There is a mirror, a debug overlay, a hand cursor with
-dwell activation, and no content to navigate. `docs/roadmap.md` has the order.
+`ui/experience.ts` builds the menu from one list of modes and the icon set, and owns the
+Picture-mode state machine. Victory opens Picture mode; Open Palm starts its countdown. The final
+frame is encoded from the native video element and written locally through the server endpoint
+described in ADR 0009.
+
+Where the menu *is* on any given frame is not the renderer's business.
+`interaction/menu-physics.ts` owns that: the UI measures the panels once at rest, with their
+transforms suppressed, and hands those rectangles over; the physics returns travel, lean, the
+position of the light on each panel, and which one the cursor has dwelled on long enough to pick.
+Hit rectangles therefore move with the panels they belong to, which they must, because the panels
+move. Springs and the brush force live in `interaction/soft-mount.ts` and are unit-tested without a
+camera. See [ADR 0010](adr/0010-reactive-glass-menu.md).
+
+Panel measurements are in *isotropic screen units*: y normalized over the viewport height and x over
+it as well, so a radius is round rather than an ellipse on a 16:9 screen. `PerceptionFrame`
+coordinates are converted on the way in and offsets are multiplied back out by the viewport height
+on the way to CSS. This is the only place in the codebase that uses anything but the normalized
+mirrored space of [ADR 0004](adr/0004-mirrored-screen-space.md), and it never leaves the menu.

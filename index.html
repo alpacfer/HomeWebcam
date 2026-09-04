@@ -10,7 +10,31 @@
       <!-- playsinline + muted are what let the stream autoplay without a gesture. -->
       <video id="camera" autoplay playsinline muted></video>
       <canvas id="overlay"></canvas>
-      <p id="boot">waking up the mirror</p>
+
+      <!-- The dock's tiles are built in src/ui/experience.ts, from one list of
+           modes and the icon set, so a new mode is a new entry and nothing else. -->
+      <section id="experience" aria-label="Mirror modes">
+        <nav id="dock" class="dock" aria-label="Choose a mode"></nav>
+      </section>
+
+      <div id="countdown" class="countdown" aria-hidden="true" aria-live="assertive">
+        <div id="countdown-dial" class="countdown__dial glass glass--clear">
+          <span id="countdown-ring" class="ring countdown__ring ring--tracked" aria-hidden="true">
+          </span>
+          <strong id="countdown-number" class="countdown__number">3</strong>
+        </div>
+      </div>
+
+      <div id="capture-status" class="status glass" role="status" aria-hidden="true">
+        <span id="capture-status-icon" class="status__icon" aria-hidden="true"></span>
+        <span id="capture-status-text" class="sr-only"></span>
+      </div>
+
+      <div id="capture-flash" class="capture-flash" aria-hidden="true"></div>
+      <div id="boot" class="boot" role="status">
+        <span class="boot__pulse" aria-hidden="true"></span>
+        <span class="sr-only">Waking up the mirror</span>
+      </div>
       <pre id="hud"></pre>
     </main>
     <script type="module" src="/src/main.ts"></script>

@@ -10,18 +10,24 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "check": "biome check . && tsc --noEmit && vitest run",
+    "preflight": "node scripts/preflight.mjs",
+    "check": "biome check . && tsc --noEmit && vitest run && node scripts/check-frictions.mjs && node scripts/check-styles.mjs",
     "fix": "biome check --write .",
     "test": "vitest run",
     "models": "node scripts/fetch-models.mjs",
     "postinstall": "node scripts/sync-wasm.mjs",
-    "screenshot": "node scripts/screenshot.mjs"
+    "screenshot": "node scripts/screenshot.mjs",
+    "station": "node scripts/station.mjs",
+    "verify": "node scripts/station.mjs verify"
   },
   "dependencies": {
-    "@mediapipe/tasks-vision": "^1.0.1"
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "@phosphor-icons/core": "^2.1.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.12",
+    "@types/node": "^26.4.1",
+    "happy-dom": "^20.14.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitest": "^5.0.0"

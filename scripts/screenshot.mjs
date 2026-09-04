@@ -2,66 +2,78 @@
  * Captures a screenshot of the running app from a real Chrome, over CDP.
  *
  * The point is that UI changes can be verified without a human at the station:
- *   npm run dev            # in one terminal
- *   npm run screenshot     # writes captures/app.png
+ *   ./start.sh              # the station, with its controllable Chrome
+ *   npm run screenshot      # writes captures/app.png
  *
- * When start.sh is running, this attaches to its Chrome on port 9222 by default
- * so the existing page and real camera are reused. Otherwise Chrome is launched
- * headless with camera permission pre-granted. Pass --fake-camera for a new,
- * deterministic synthetic feed with nobody in front of it.
+ * When a debug server is already running, its page and camera owner are
+ * authoritative. The default path attaches to its Chrome on port 9222 and
+ * refuses to launch a competing browser if that control endpoint is missing.
+ * Pass --new-browser or --fake-camera only when isolation is explicitly wanted.
+ *
+ * For anything richer than a picture - app state, driving hands, probing what
+ * was actually drawn - use `npm run station`. This tool stays deliberately
+ * simple, and is the only one allowed to start a browser of its own.
  *
  * Usage:
  *   node scripts/screenshot.mjs [--out FILE] [--url URL] [--fake-camera]
  *                              [--width N] [--height N] [--settle MS]
  *                              [--wait-for "JS expression"] [--keys "d,d"]
- *                              [--attach] [--new-browser] [--port N]
+ *                              [--attach] [--new-browser] [--port N] [--reload]
+ *                              [--after "JS expression"]
  */
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  args,
+  Cdp,
+  pageTarget,
+  STATION_PORT,
+  STATION_URL,
+  serverIsReady,
+  sleep,
+} from "./lib/cdp.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const flags = args();
 
-const args = process.argv.slice(2);
-const flag = (name, fallback) => {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : fallback;
-};
-const has = (name) => args.includes(`--${name}`);
+const requestedUrl = String(flags.get("url", STATION_URL));
+const stationPort = flags.number("port", STATION_PORT);
+const forceAttach = flags.has("attach");
+const forceNewBrowser = flags.has("new-browser") || flags.has("fake-camera");
 
-const requestedUrl = flag("url", "http://127.0.0.1:5173/");
-const stationPort = Number(flag("port", 9222));
-const forceAttach = has("attach");
-const forceNewBrowser = has("new-browser") || has("fake-camera");
-
-async function debuggerIsReady(port) {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/json/list`);
-    const targets = await response.json();
-    return targets.some((target) => target.type === "page" && target.url === requestedUrl);
-  } catch {
-    return false;
-  }
+const stationIsRunning = (await pageTarget(stationPort, requestedUrl)) !== null;
+if (!(await serverIsReady(requestedUrl))) {
+  throw new Error(`No HomeWebcam debug server found at ${requestedUrl}. Run ./start.sh first.`);
 }
-
-const stationIsRunning = await debuggerIsReady(stationPort);
 if (forceAttach && !stationIsRunning) {
   throw new Error(
     `No controllable station Chrome found on port ${stationPort}. Run ./start.sh first.`,
   );
 }
-const attach = forceAttach || (!forceNewBrowser && stationIsRunning);
+if (!forceNewBrowser && !stationIsRunning) {
+  throw new Error(
+    `HomeWebcam is already running at ${requestedUrl}, but its browser is not controllable on port ${stationPort}. Refusing to launch a competing browser or camera. Reopen the station through ./start.sh, or explicitly request --new-browser/--fake-camera for an isolated run.`,
+  );
+}
+const attach = !forceNewBrowser;
 
 const opts = {
   url: requestedUrl,
-  out: resolve(root, flag("out", "captures/app.png")),
-  width: Number(flag("width", 1280)),
-  height: Number(flag("height", 720)),
-  settle: Number(flag("settle", 6000)),
-  waitFor: flag("wait-for", "document.body.classList.contains('is-live')"),
-  keys: flag("keys", "").split(",").filter(Boolean),
-  fakeCamera: has("fake-camera"),
+  out: resolve(root, String(flags.get("out", "captures/app.png"))),
+  width: flags.number("width", 1280),
+  height: flags.number("height", 720),
+  settle: flags.number("settle", 6000),
+  waitFor: String(flags.get("wait-for", "document.body.classList.contains('is-live')")),
+  keys: String(flags.get("keys", "")).split(",").filter(Boolean),
+  // An attached station keeps whatever state a visitor left it in. Capturing
+  // the first thing someone sees means putting the page back to its start.
+  reload: flags.has("reload"),
+  // Sleeping a fixed time after a keystroke captures whatever the app happens
+  // to be doing. --after waits for the state you actually came for, and reads
+  // progress just as well as flags: "+el.style.getPropertyValue('--p') > 0.45".
+  after: flags.get("after", ""),
+  fakeCamera: flags.has("fake-camera"),
   attach,
   port: attach ? stationPort : 10_000 + Math.floor(Math.random() * 1000),
 };
@@ -97,17 +109,14 @@ const chrome = opts.attach
 const stderr = [];
 chrome?.stderr.on("data", (chunk) => stderr.push(String(chunk)));
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 async function debuggerUrl() {
   for (let i = 0; i < 60; i++) {
+    const target = await pageTarget(opts.port, opts.url);
+    if (target?.webSocketDebuggerUrl) return target.webSocketDebuggerUrl;
     try {
-      const res = await fetch(`http://127.0.0.1:${opts.port}/json/list`);
-      const targets = await res.json();
-      const page =
-        targets.find((target) => target.type === "page" && target.url === opts.url) ??
-        targets.find((target) => target.type === "page");
-      if (page?.webSocketDebuggerUrl) return page.webSocketDebuggerUrl;
+      const targets = await (await fetch(`http://127.0.0.1:${opts.port}/json/list`)).json();
+      const any = targets.find((t) => t.type === "page");
+      if (any?.webSocketDebuggerUrl) return any.webSocketDebuggerUrl;
     } catch {
       // Chrome not listening yet.
     }
@@ -116,51 +125,9 @@ async function debuggerUrl() {
   throw new Error(`Chrome never opened a debugger port.\n${stderr.join("")}`);
 }
 
-class Cdp {
-  #ws;
-  #id = 0;
-  #pending = new Map();
-
-  static async connect(url) {
-    const cdp = new Cdp();
-    cdp.#ws = new WebSocket(url);
-    cdp.#ws.addEventListener("message", (event) => {
-      const msg = JSON.parse(event.data);
-      const waiter = cdp.#pending.get(msg.id);
-      if (waiter === undefined) return;
-      cdp.#pending.delete(msg.id);
-      msg.error ? waiter.reject(new Error(msg.error.message)) : waiter.resolve(msg.result);
-    });
-    await new Promise((res, rej) => {
-      cdp.#ws.addEventListener("open", res, { once: true });
-      cdp.#ws.addEventListener("error", () => rej(new Error("CDP socket failed")), { once: true });
-    });
-    return cdp;
-  }
-
-  send(method, params = {}) {
-    const id = ++this.#id;
-    return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
-      this.#ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-
-  async evaluate(expression) {
-    const { result } = await this.send("Runtime.evaluate", { expression, awaitPromise: true });
-    return result.value;
-  }
-
-  close() {
-    this.#ws.close();
-  }
-}
-
 let cdp;
 try {
   cdp = await Cdp.connect(await debuggerUrl());
-  await cdp.send("Page.enable");
-  await cdp.send("Runtime.enable");
   if (!opts.attach) {
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: opts.width,
@@ -168,60 +135,44 @@ try {
       deviceScaleFactor: 1,
       mobile: false,
     });
+    await cdp.send("Page.navigate", { url: opts.url });
+  } else if (opts.reload) {
+    await cdp.reload();
   }
 
-  if (!opts.attach) await cdp.send("Page.navigate", { url: opts.url });
-
-  const deadline = Date.now() + 30_000;
-  let ready = false;
-  while (Date.now() < deadline) {
-    if (await cdp.evaluate(opts.waitFor).catch(() => false)) {
-      ready = true;
-      break;
-    }
-    await sleep(250);
-  }
-  if (!ready) {
-    const hud = await cdp.evaluate("document.getElementById('hud')?.textContent ?? ''");
-    throw new Error(`Timed out waiting for \`${opts.waitFor}\`.\nHUD said: ${hud || "(empty)"}`);
-  }
+  await cdp.waitFor(opts.waitFor, { timeoutMs: 30_000, everyMs: 250 });
 
   // Let the detectors warm up and the fade-in finish before capturing.
   await sleep(opts.settle);
 
   for (const key of opts.keys) {
-    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key, text: key });
-    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key });
+    await cdp.keys([key]);
     const cameraMode = { d: "debug", f: "final" }[key.toLowerCase()];
     if (cameraMode === undefined) {
-      await sleep(500);
+      await sleep(380);
       continue;
     }
-
-    const modeDeadline = Date.now() + 15_000;
-    while (Date.now() < modeDeadline) {
-      const activeMode = await cdp.evaluate("document.body.dataset.cameraMode");
-      if (activeMode === cameraMode) break;
-      await sleep(100);
-    }
-    const activeMode = await cdp.evaluate("document.body.dataset.cameraMode");
-    if (activeMode !== cameraMode) throw new Error(`Camera never entered ${cameraMode} mode`);
+    await cdp.waitFor(`document.body.dataset.cameraMode === ${JSON.stringify(cameraMode)}`, {
+      timeoutMs: 15_000,
+      everyMs: 100,
+      what: `the camera to enter ${cameraMode} mode`,
+    });
   }
 
+  if (opts.after !== "") await cdp.waitFor(String(opts.after), { timeoutMs: 20_000 });
+
   const hud = await cdp.evaluate("document.getElementById('hud')?.textContent ?? ''");
-  const { data } = await cdp.send("Page.captureScreenshot", { format: "png" });
-  await mkdir(dirname(opts.out), { recursive: true });
-  await writeFile(opts.out, Buffer.from(data, "base64"));
+  await cdp.screenshot(opts.out);
 
   console.log(`[screenshot] ${opts.out}`);
-  console.log(`[screenshot] HUD:\n${hud.replace(/^/gm, "  ")}`);
+  console.log(`[screenshot] HUD:\n${String(hud).replace(/^/gm, "  ")}`);
 } finally {
   cdp?.close();
   if (chrome !== null) {
     try {
       process.kill(-chrome.pid, "SIGKILL");
     } catch {
-      chrome.kill("SIGKILL");
+      // Already gone.
     }
   }
 }

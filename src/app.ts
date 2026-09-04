@@ -6,10 +6,14 @@ import {
   stopCamera,
 } from "./camera/camera.js";
 import { CONFIG } from "./config.js";
-import { HandCursor } from "./interaction/cursor.js";
+import { installDebugBridge, type LoopSnapshot } from "./debug/bridge.js";
+import { PuppetController } from "./debug/puppet.js";
+import { type CursorState, HandCursor } from "./interaction/cursor.js";
 import { requireElement } from "./lib/assert.js";
 import { FpsMeter } from "./lib/fps.js";
 import { PerceptionEngine } from "./perception/engine.js";
+import type { PerceptionFrame } from "./perception/types.js";
+import { ExperienceUi } from "./ui/experience.js";
 import { Hud } from "./ui/hud.js";
 import { fitCanvas, setupMirror } from "./ui/mirror.js";
 import { drawOverlay } from "./ui/overlay.js";
@@ -32,10 +36,13 @@ export class App {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly hud: Hud;
+  private readonly experience: ExperienceUi;
 
   private readonly engine = new PerceptionEngine();
   private readonly cursor = new HandCursor();
   private readonly fps = new FpsMeter();
+  /** Scripted hands, for verification. Inert unless something arms it. */
+  readonly puppet = new PuppetController();
 
   private stream: MediaStream | null = null;
   private source = "starting";
@@ -44,11 +51,14 @@ export class App {
   private modeChange: Promise<void> = Promise.resolve();
   private loopGeneration = 0;
   private lastHudAt = 0;
+  private lastFrame: PerceptionFrame | null = null;
+  private lastCursor: CursorState | null = null;
 
   constructor(root: ParentNode = document) {
     this.video = requireElement(root, "#camera", HTMLVideoElement);
     this.canvas = requireElement(root, "#overlay", HTMLCanvasElement);
     this.hud = new Hud(requireElement(root, "#hud", HTMLElement));
+    this.experience = new ExperienceUi(root, () => this.capturePicture());
 
     const ctx = this.canvas.getContext("2d");
     if (ctx === null) throw new Error("2D canvas context unavailable");
@@ -65,9 +75,14 @@ export class App {
     window.addEventListener("keydown", (e) => {
       if (e.repeat) return;
       const key = e.key.toLowerCase();
-      if (key !== "d" && key !== "f") return;
-      e.preventDefault();
-      this.requestMode(key === "d" ? "debug" : "final");
+      if (key === "d" || key === "f") {
+        e.preventDefault();
+        this.requestMode(key === "d" ? "debug" : "final");
+      } else if (key === "p") {
+        this.experience.enterPicture();
+      } else if (key === "c") {
+        this.experience.requestCapture(performance.now());
+      }
     });
 
     try {
@@ -87,6 +102,9 @@ export class App {
     }
 
     fitCanvas(this.canvas);
+    // Dev only: the station's debug surface, and the door the puppet comes in
+    // through. Stripped from a production build. See src/debug/bridge.ts.
+    if (import.meta.env.DEV) installDebugBridge(this);
     document.body.classList.add("is-live");
     this.running = true;
     this.startFrameLoop();
@@ -119,10 +137,16 @@ export class App {
 
   private onFrame(now: number, generation: number): void {
     if (generation !== this.loopGeneration) return;
-    const frame = this.engine.step(this.video, now);
+    // A puppet replaces the detectors outright rather than merging with them:
+    // half-real hands would be the one kind of evidence worse than none.
+    const frame = this.puppet.active
+      ? this.puppet.frame(now, window.innerWidth / window.innerHeight)
+      : this.engine.step(this.video, now);
     if (frame !== null) {
       this.fps.tick(now);
-      const cursor = this.cursor.update(frame);
+      const cursor = this.experience.update(frame, this.cursor.update(frame));
+      this.lastFrame = frame;
+      this.lastCursor = cursor;
       const showDebug = this.mode === "debug";
       drawOverlay(this.ctx, frame, cursor, showDebug);
 
@@ -176,5 +200,52 @@ export class App {
   private presentMode(): void {
     document.body.dataset.cameraMode = this.mode;
     this.hud.setVisible(this.mode === "debug");
+  }
+
+  /** Everything the frame loop knows, for the debug bridge. Dev only. */
+  loop(): LoopSnapshot {
+    return {
+      live: this.running,
+      cameraMode: this.mode,
+      cameraSource: this.source,
+      fps: this.fps.fps,
+      timings: this.engine.detectorTimings,
+      frame: this.lastFrame,
+      cursor: this.lastCursor,
+    };
+  }
+
+  private async capturePicture(): Promise<string> {
+    const width = this.video.videoWidth;
+    const height = this.video.videoHeight;
+    if (width === 0 || height === 0) throw new Error("Camera frame is not ready");
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (ctx === null) throw new Error("Capture canvas is unavailable");
+
+    if (CONFIG.ui.mirrored) {
+      ctx.translate(width, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(this.video, 0, 0, width, height);
+
+    const png = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => (blob === null ? reject(new Error("PNG encoding failed")) : resolve(blob)),
+        "image/png",
+      );
+    });
+    const response = await fetch("/api/captures", {
+      method: "POST",
+      headers: { "Content-Type": "image/png" },
+      body: png,
+    });
+    if (!response.ok) throw new Error(`Capture server returned ${response.status}`);
+    const result = (await response.json()) as { filename?: unknown };
+    if (typeof result.filename !== "string") throw new Error("Capture server response was invalid");
+    return result.filename;
   }
 }
