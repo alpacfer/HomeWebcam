@@ -9,11 +9,17 @@ export interface HudStats {
   mode: CameraMode;
   /** Rate the perception loop achieves, capped by the camera. */
   fps: number;
+  /** Rate the camera actually delivers, measured rather than negotiated. */
+  capturedFps: number;
   /** What the camera actually negotiated. See describeStream(). */
   camera: string;
   /** Per-detector cost. The budget at 60 fps is 16.7 ms for all of them. */
   timings: DetectorTimings;
 }
+
+/** Below this fraction of the negotiated rate the shortfall is called out. 0.8
+ * clears the jitter of a camera holding its rate and catches a halving. */
+const SHORTFALL_RATIO = 0.8;
 
 /** Corner readout: is the loop alive, and what does it currently see. */
 export class Hud {
@@ -32,6 +38,7 @@ export class Hud {
 
     const lines = [
       `${stats.mode.toUpperCase()} · ${stats.fps.toFixed(0)} fps loop · camera ${stats.camera}`,
+      `delivering ${stats.capturedFps.toFixed(0)} fps${describeShortfall(stats)}`,
       `hands ${stats.timings.hands.toFixed(1)}ms · faces ${stats.timings.faces.toFixed(1)}ms`,
       `hands ${frame.hands.length} · faces ${frame.faces.length}`,
       gestures || "no gesture",
@@ -57,6 +64,18 @@ export class Hud {
     this.root.classList.add("hud--error");
     this.root.textContent = `${message}\n\n${hint}`;
   }
+}
+
+/**
+ * The camera reports the frame rate it negotiated, not the one it is sending,
+ * and the C922 halves the real rate in dim light while still claiming 30. So
+ * the shortfall is named here rather than left as two numbers to compare.
+ */
+function describeShortfall(stats: HudStats): string {
+  const claimed = Number(stats.camera.match(/@(\d+)/)?.[1] ?? 0);
+  if (claimed === 0 || stats.capturedFps === 0) return "";
+  if (stats.capturedFps >= claimed * SHORTFALL_RATIO) return "";
+  return ` · CAMERA SHORT of ${claimed} (light? see docs/hardware.md)`;
 }
 
 function describeFace(face: FaceObservation): string {

@@ -10,7 +10,7 @@ import { installDebugBridge, type LoopSnapshot } from "./debug/bridge.js";
 import { PuppetController } from "./debug/puppet.js";
 import { type CursorState, HandCursor } from "./interaction/cursor.js";
 import { requireElement } from "./lib/assert.js";
-import { FpsMeter } from "./lib/fps.js";
+import { FpsMeter, SkippedFrames } from "./lib/fps.js";
 import { PerceptionEngine } from "./perception/engine.js";
 import type { PerceptionFrame } from "./perception/types.js";
 import { ExperienceUi } from "./ui/experience.js";
@@ -41,6 +41,9 @@ export class App {
   private readonly engine = new PerceptionEngine();
   private readonly cursor = new HandCursor();
   private readonly fps = new FpsMeter();
+  /** Camera frames per processed frame, so an under-delivering camera is
+   * distinguishable from a loop that cannot keep up. */
+  private readonly skipped = new SkippedFrames();
   /** Scripted hands, for verification. Inert unless something arms it. */
   readonly puppet = new PuppetController();
 
@@ -102,6 +105,7 @@ export class App {
     }
 
     fitCanvas(this.canvas);
+    this.watchStream(this.stream);
     // Dev only: the station's debug surface, and the door the puppet comes in
     // through. Stripped from a production build. See src/debug/bridge.ts.
     if (import.meta.env.DEV) installDebugBridge(this);
@@ -126,17 +130,23 @@ export class App {
   private scheduleFrame(generation: number): void {
     if (!this.running || generation !== this.loopGeneration) return;
     const withVideoCallback = this.video as HTMLVideoElement & {
-      requestVideoFrameCallback?: (cb: (now: number) => void) => number;
+      requestVideoFrameCallback?: (
+        cb: (now: number, metadata: { presentedFrames: number }) => void,
+      ) => number;
     };
     if (typeof withVideoCallback.requestVideoFrameCallback === "function") {
-      withVideoCallback.requestVideoFrameCallback((now) => this.onFrame(now, generation));
+      withVideoCallback.requestVideoFrameCallback((now, metadata) =>
+        this.onFrame(now, generation, metadata.presentedFrames),
+      );
     } else {
-      requestAnimationFrame((now) => this.onFrame(now, generation));
+      // The fallback has no frame count, so it cannot report skipped frames.
+      requestAnimationFrame((now) => this.onFrame(now, generation, null));
     }
   }
 
-  private onFrame(now: number, generation: number): void {
+  private onFrame(now: number, generation: number, presentedFrames: number | null): void {
     if (generation !== this.loopGeneration) return;
+    if (presentedFrames !== null) this.skipped.tick(presentedFrames);
     // A puppet replaces the detectors outright rather than merging with them:
     // half-real hands would be the one kind of evidence worse than none.
     const frame = this.puppet.active
@@ -155,12 +165,53 @@ export class App {
         this.hud.render(frame, cursor, {
           mode: this.mode,
           fps: this.fps.fps,
+          capturedFps: this.capturedFps,
           camera: this.source,
           timings: this.engine.detectorTimings,
         });
       }
     }
     this.scheduleFrame(generation);
+  }
+
+  /**
+   * Unplugging the camera ends its track. Nothing else notices: the video
+   * element keeps its last dimensions, `paused` stays false, and
+   * requestVideoFrameCallback simply stops firing, so the loop goes quiet with
+   * a black screen and no error. This station lives in a hallway, where a black
+   * mirror that says nothing is indistinguishable from a broken one.
+   */
+  private watchStream(stream: MediaStream): void {
+    const track = stream.getVideoTracks()[0];
+    if (track === undefined) return;
+    track.addEventListener("ended", () => {
+      // A mode change stops the old track deliberately; that is not a loss.
+      if (this.stream !== stream) return;
+      this.onCameraLost();
+    });
+  }
+
+  private onCameraLost(): void {
+    this.running = false;
+    this.loopGeneration++;
+    this.source = "disconnected";
+    document.body.classList.remove("is-live");
+    // showError un-hides the HUD, so this reaches a visitor in final mode too.
+    this.hud.showError(
+      "The camera stopped.",
+      "Check that it is plugged in, then reopen the mirror. If it was just moved to another port, the browser needs to ask for it again.",
+    );
+  }
+
+  /**
+   * What the camera actually delivers, as opposed to what it claims.
+   *
+   * getSettings() reports the negotiated frame rate, which the C922 keeps
+   * saying is 30 while auto-exposure quietly halves it. Processed fps times
+   * camera frames per processed frame recovers the real delivery rate.
+   */
+  private get capturedFps(): number {
+    return this.fps.fps * this.skipped.framesPerProcessed;
   }
 
   private requestMode(mode: CameraMode): void {
@@ -189,6 +240,7 @@ export class App {
 
         this.mode = mode;
         this.source = describeStream(this.stream, mode);
+        this.watchStream(this.stream);
         this.presentMode();
         this.startFrameLoop();
       })
@@ -208,7 +260,10 @@ export class App {
       live: this.running,
       cameraMode: this.mode,
       cameraSource: this.source,
-      fps: this.fps.fps,
+      // Both meters hold a rolling average that never decays, so a dead loop
+      // would keep reporting the rate it managed before it died.
+      fps: this.running ? this.fps.fps : 0,
+      capturedFps: this.running ? this.capturedFps : 0,
       timings: this.engine.detectorTimings,
       frame: this.lastFrame,
       cursor: this.lastCursor,

@@ -34,6 +34,11 @@ friction; the mandatory end-of-task review in `docs/development-workflow.md` is 
 | [0009. Every question needed a new throwaway script](0009-no-debug-surface-on-the-station.md) | integrated | One typed debug snapshot and one `npm run station` command. |
 | [0010. Page code mangled by escaping](0010-page-code-mangled-by-escaping.md) | integrated | Values cross into the page as JSON data, never as interpolated code. |
 | [0011. Frame rate measured through a throttle](0011-frame-rate-measured-through-a-throttle.md) | integrated | Window visibility is in the snapshot; `perf` refuses to be believed without it. |
+| [0012. No way to focus the station](0012-no-way-to-focus-the-station.md) | integrated | `station focus` fixes the throttle; `state` prints the warning 0011 promised. |
+| [0013. The camera claimed a frame rate it was not sending](0013-camera-claimed-a-frame-rate-it-was-not-sending.md) | integrated | Delivered rate is measured from skipped frames, in the HUD and the snapshot. |
+| [0014. Closing the window stranded the station](0014-closing-the-window-stranded-the-station.md) | integrated | Camera loss is an error on screen; `start.sh` reuses a running server. |
+| [0015. An unsupported flag put words on the mirror](0015-an-unsupported-flag-put-words-on-the-mirror.md) | integrated | The camera is granted in the Chrome profile; no flag, no banner, no prompt. |
+| [0016. A check read the camera through the ring](0016-a-check-read-the-camera-through-the-ring.md) | integrated | The ring sampler only reads its outer band, and is re-tested against a mirrored ring. |
 
 ## Record template
 

@@ -31,6 +31,7 @@ export interface LoopSnapshot {
   cameraMode: CameraMode;
   cameraSource: string;
   fps: number;
+  capturedFps: number;
   timings: DetectorTimings;
   frame: PerceptionFrame | null;
   cursor: CursorState | null;
@@ -72,7 +73,18 @@ export interface StationSnapshot {
    * detectors.
    */
   perceptionSource: "camera" | "puppet";
-  camera: { mode: CameraMode; source: string; fps: number; timings: DetectorTimings };
+  /**
+   * `fps` is what the loop processes; `capturedFps` is what the camera
+   * delivers. They diverge for opposite reasons and want opposite fixes, and
+   * `source` reports only what was negotiated, which can be a fiction.
+   */
+  camera: {
+    mode: CameraMode;
+    source: string;
+    fps: number;
+    capturedFps: number;
+    timings: DetectorTimings;
+  };
   hands: Array<{
     side: string;
     gesture: GestureName;
@@ -182,6 +194,7 @@ function snapshot(host: DebugHost): StationSnapshot {
       mode: loop.cameraMode,
       source: loop.cameraSource,
       fps: loop.fps,
+      capturedFps: loop.capturedFps,
       timings: loop.timings,
     },
     hands: (frame?.hands ?? []).map((hand) => ({

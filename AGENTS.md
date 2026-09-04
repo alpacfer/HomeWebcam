@@ -20,6 +20,7 @@ npm run preflight    # read-only report of server and browser-control state
 npm run check        # biome + tsc + vitest + records. Must pass before you commit.
 npm run fix          # auto-fix formatting and lint
 npm run station      # ask the live station anything. Start here.
+npm run station -- focus  # required before believing any frame rate
 npm run verify       # drive every interaction through the live station, ~30 s
 npm run screenshot   # attaches to start.sh's live Chrome when available
 ```
@@ -31,7 +32,8 @@ opened. It never launches a browser: `/dev/video0` allows one owner.
 
 | Command | For |
 | --- | --- |
-| `state` | One snapshot: camera, detectors, hands, cursor, mode, phase, every panel's travel, lean, glow and progress, and any words on screen. **Run this before writing any script.** |
+| `state` | One snapshot: camera (claimed *and* delivered rate), detectors, hands, cursor, mode, phase, every panel's travel, lean, glow and progress, and any words on screen. **Run this before writing any script.** |
+| `focus` | Bring the station window to the front, and say whether it took. **Run this before reading any frame rate**: an unfocused window is throttled. |
 | `shoot F --crop menu --zoom 3` | Capture, cropped to a named region and scaled, in one call. Regions: `menu`, `tile`, `countdown`, `status`, `hud`, or `x,y,w,h`. |
 | `watch ".menu.panels[0].glow"` | Poll a snapshot path or expression; reports min/median/max, and can `--shoot-when` a condition fires. |
 | `probe SEL --ring --style a,b` | Geometry, computed styles, and which way a progress arc is *actually* filled, read off the pixels. |

@@ -9,6 +9,7 @@
  *   npm run station -- perf --css ".tile{backdrop-filter:none!important}"
  *   npm run station -- puppet wave | point | victory | palm | both | stop
  *   npm run station -- verify
+ *   npm run station -- focus
  *
  * Everything attaches to the Chrome that ./start.sh already opened. Nothing
  * here ever launches a browser: /dev/video0 allows exactly one owner, and a
@@ -37,6 +38,7 @@ const commands = {
   perf: cmdPerf,
   puppet: cmdPuppet,
   verify: cmdVerify,
+  focus: cmdFocus,
 };
 
 const run = commands[command];
@@ -158,6 +160,9 @@ async function cmdPerf(cdp) {
     );
   }
 
+  // Try to fix the throttle rather than only reporting it.
+  await cdp.send("Page.bringToFront");
+  await sleep(600);
   const first = await cdp.snapshot();
   if (throttleWarning(first) !== "") {
     console.log(
@@ -181,6 +186,29 @@ async function cmdPerf(cdp) {
     );
   }
   await cdp.evaluate(styleOverride(""));
+}
+
+/**
+ * Brings the station window to the front and reports whether it worked.
+ *
+ * Chrome throttles a page nobody is looking at, so every frame rate measured
+ * on an unfocused window is a measurement of the throttle. There was no way to
+ * fix that from the command line, and the machine has neither xdotool nor
+ * wmctrl, so the fix was an ad-hoc CDP script every time. See friction 0012.
+ */
+async function cmdFocus(cdp) {
+  await cdp.send("Page.bringToFront");
+  await sleep(600);
+  const s = await cdp.snapshot();
+  const ok = s.visibility.state === "visible" && s.visibility.focused;
+  console.log(
+    `[focus] window ${s.visibility.state}, ${s.visibility.focused ? "focused" : "UNFOCUSED"}` +
+      `${ok ? " - frame rates are now worth reading" : " - frame rates are still throttled"}`,
+  );
+  if (!ok) {
+    console.log("[focus] bringToFront did not take. Click the station window before measuring.");
+  }
+  printState(s);
 }
 
 async function cmdPuppet(cdp, [name = "stop"]) {
@@ -554,6 +582,16 @@ async function sampleRing(cdp, box, points) {
     const cx = image.width / 2;
     const cy = image.height / 2;
     const buckets = new Array(${points}).fill(0);
+    // Only the outer band counts. The crop is the ring's own bounding box, so
+    // everything inside it is the live camera picture seen through the middle of
+    // the ring - and a bluish highlight in the scene is accent-coloured enough
+    // to register as a filled bucket. That reported an arc starting 15 degrees
+    // early off a pair of glasses. See docs/frictions/0016.
+    //
+    // The band follows the box edge along each ray rather than a fixed radius,
+    // because the dial is a rounded square: its corners sit much further from
+    // the centre than its edge midpoints do.
+    const OUTER_BAND = 0.75;
     for (let y = 0; y < image.height; y++) {
       for (let x = 0; x < image.width; x++) {
         const o = (y * image.width + x) * 4;
@@ -561,7 +599,16 @@ async function sampleRing(cdp, box, points) {
         const g = px[o + 1];
         const b = px[o + 2];
         if (g - r <= greenBias || b - r <= blueBias || (r + g + b) / 3 < 90) continue;
-        const deg = (Math.atan2(x - cx, cy - y) * 180) / Math.PI;
+        const ux = x - cx;
+        const uy = cy - y;
+        const radius = Math.hypot(ux, uy);
+        if (radius === 0) continue;
+        const toEdge = Math.min(
+          Math.abs(cx / (ux / radius)) || Number.POSITIVE_INFINITY,
+          Math.abs(cy / (uy / radius)) || Number.POSITIVE_INFINITY,
+        );
+        if (radius < toEdge * OUTER_BAND) continue;
+        const deg = (Math.atan2(ux, uy) * 180) / Math.PI;
         buckets[Math.floor((((deg % 360) + 360) % 360) / (360 / ${points}))] += 1;
       }
     }
@@ -624,6 +671,10 @@ function printState(s) {
   console.log(
     `[state] ${s.camera.mode} · ${s.camera.fps.toFixed(0)} fps · ${s.camera.source}${badge}`,
   );
+  // friction 0011 claimed this warning was here and it was not, so a whole
+  // session's numbers were read without knowing the window was unfocused.
+  if (throttleWarning(s) !== "") console.log(`[state]${throttleWarning(s)}`);
+  if (deliveryWarning(s) !== "") console.log(`[state]${deliveryWarning(s)}`);
   console.log(
     `[state] hands ${s.hands.length}${s.hands.length > 0 ? ` (${s.hands.map((h) => `${h.side}:${h.gesture}@${h.confidence.toFixed(2)}`).join(", ")})` : ""} · faces ${s.faces} · detectors hands ${s.camera.timings.hands.toFixed(1)}ms faces ${s.camera.timings.faces.toFixed(1)}ms`,
   );
@@ -652,6 +703,18 @@ function printState(s) {
 function throttleWarning(snapshot) {
   if (snapshot.visibility.state === "visible" && snapshot.visibility.focused) return "";
   return `  ⚠ window ${snapshot.visibility.state}${snapshot.visibility.focused ? "" : ", unfocused"} - frame rate is throttled`;
+}
+
+/** The camera reports the rate it negotiated, not the rate it sends. */
+function deliveryWarning(snapshot) {
+  const { capturedFps, source, fps } = snapshot.camera;
+  const claimed = Number(/@(\d+)/.exec(source)?.[1] ?? 0);
+  if (claimed === 0 || capturedFps === undefined || capturedFps === 0) return "";
+  if (capturedFps >= claimed * 0.8) return "";
+  return (
+    `  ⚠ camera delivering ${capturedFps.toFixed(1)} fps of the ${claimed} it claims` +
+    ` (loop processes ${fps.toFixed(1)}) - see docs/hardware.md`
+  );
 }
 
 function fmt(value) {

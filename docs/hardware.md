@@ -52,13 +52,87 @@ physical camera's second node and is not what you want. Both are readable by
 Reproduce the enumeration with `v4l2-ctl --list-formats-ext -d /dev/video0`
 (package `v4l-utils`, not currently installed).
 
+## The camera lies about its frame rate
+
+`track.getSettings().frameRate` reports what was *negotiated*, not what is
+arriving, so it read 30 through an entire session in which the camera sent 15.
+`describeStream`'s `minFrameRate` guard compares the claim against itself and
+cannot catch this. Trust `capturedFps` - measured from skipped
+`requestVideoFrameCallback` frames, printed by the HUD and by
+`npm run station -- state`. See friction 0013.
+
+**Auto-exposure halves the frame rate.** In ordinary indoor hallway light the
+C922 chose a 27.8 ms exposure and dropped to 15 fps to afford it, at both
+1080p30 and 720p60. Forcing a short exposure restored 30 fps *and* a brighter
+picture (mean luma 175 against 133), because the sensor compensates with gain.
+
+The frame interval is negotiated when the stream opens, so changing exposure on
+a live track does nothing. Re-negotiate - `applyConstraints` with a different
+size, or reopen the stream - or the change appears to have no effect.
+
+The control that permits this is UVC's `exposure_dynamic_framerate`
+(`V4L2_CID_EXPOSURE_AUTO_PRIORITY`). Turning it off keeps auto-exposure - the
+hallway still gets darker at night without the picture going black - and takes
+away the camera's licence to pay for exposure with frame rate. **There is no
+MediaTrack constraint for it**, which is why `start.sh` sets it rather than
+`camera.ts`:
+
+```bash
+v4l2-ctl -d /dev/video0 -c exposure_dynamic_framerate=0
+```
+
+Setting a control needs no root, because `/dev/video0` is reachable through a
+filesystem ACL. Installing the tool does, once:
+
+```bash
+sudo apt install v4l-utils
+```
+
+Read it back with `v4l2-ctl -d /dev/video0 -l`. On this camera:
+
+```
+exposure_dynamic_framerate 0x009a0903 (bool) : default=0 value=1
+```
+
+The camera's own default is **off** - a value of 1 is something having turned it
+on, and is the whole reason the station ran at half rate. Setting it to 0 took
+delivery to 30.0 fps at 1080p.
+
+The control does **not** survive a replug or a reboot, so `start.sh` sets it on
+every launch instead of once. It is safe to set there: `camera.ts` asks for
+`exposureMode: "continuous"`, which looks like it ought to re-enable dynamic
+framerate, and verifying showed it does not - the control is still 0 after a
+fresh `getUserMedia`. Until `v4l-utils` is installed `start.sh` prints a warning
+and carries on; the HUD's `CAMERA SHORT of 30` line catches the consequence
+either way.
+
+**The camera is on a USB 2.0 bus.** `lsusb -t` puts the C922 on a 480M root hub
+alongside its own audio interfaces, while a 20000M USB 3 bus sits empty. Even
+with a short exposure, 1080p tops out near 26 fps and 720p60 never exceeds ~27.
+Moving the plug to the USB 3 port is the cheapest available headroom and needs
+no code.
+
 ## Processing budget
 
-The 60 fps camera is not the constraint; the detectors are. Two MediaPipe
-graphs (gesture recognizer + face detector) run per frame on the WebGL
-delegate. Measure with the HUD's "fps processed" figure on the real station GPU
-before deciding whether to drop a detector, decimate it to every Nth frame, or
-lower the capture rate.
+Measured on the station GPU (Intel UHD 770, ADL-S GT1) at 1080p, window
+focused, with one person and one raised hand in frame:
+
+| Pass | Empty room | One face, one hand |
+| --- | --- | --- |
+| hands (gesture recognizer) | 13-16 ms | 26-30 ms |
+| faces (FaceLandmarker, mesh + blendshapes) | 3.5 ms | 13-15 ms |
+
+The second stage is what costs: MediaPipe resizes internally, so *input
+resolution barely matters* - 1080p and 640x360 both cost ~16 ms with no hand in
+frame. What doubles the hand pass is a hand actually being there, because the
+landmark and gesture models then run per hand.
+
+At 30 fps the budget is 33.3 ms. Loaded, `hands` every frame plus `faces` every
+second frame comes to ~37 ms, which is why the loop falls to 24 fps with a
+visitor in front of it. Disabling the face pass measured 24.3 -> 29.5 fps.
+
+The interface is not the constraint. With detector work removed the full glass
+UI, `backdrop-filter` and SVG rim filter included, renders at a flat 60 Hz.
 
 Headless screenshots report 3-6 fps processed. That is Chrome's software
 rasterizer, not representative of the station.
