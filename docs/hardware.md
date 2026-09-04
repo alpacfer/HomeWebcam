@@ -7,9 +7,14 @@ not the spec sheet.
 
 ### The one that matters
 
-**1280x720 @ 60 fps, MJPG.** It is the only 60 fps mode the camera has.
+**1280x720 @ 60 fps, MJPG.** It is the only 60 fps mode the camera has and is
+used by Debug. Final uses the camera's sharpest native 16:9 mode,
+**1920x1080 @ 30 fps, MJPG**. A keyboard switch closes the current stream before
+opening the other profile; two simultaneous streams would contend for the same
+physical device.
 
-`CONFIG.camera` is set to exactly this. Changing it costs frame rate:
+`CONFIG.camera.modes` records both deliberate profiles. Changing either has a
+quality or frame-rate cost:
 
 | Request | What you get |
 | --- | --- |

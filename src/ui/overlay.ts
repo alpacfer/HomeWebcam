@@ -1,10 +1,13 @@
 import type { CursorState } from "../interaction/cursor.js";
 import { at } from "../lib/assert.js";
-import { HAND_BONES } from "../perception/landmarks.js";
-import type { PerceptionFrame, Vec2 } from "../perception/types.js";
+import { FACE_CONTOURS, HAND_BONES } from "../perception/landmarks.js";
+import type { FaceFeatures, PerceptionFrame, Vec2 } from "../perception/types.js";
 
 const HAND_COLOR = "rgba(120, 230, 255, 0.9)";
 const FACE_COLOR = "rgba(255, 205, 110, 0.9)";
+/** The mesh is 150 segments over someone's face. It has to sit behind the box. */
+const MESH_COLOR = "rgba(255, 205, 110, 0.45)";
+const IRIS_COLOR = "rgba(255, 235, 190, 0.95)";
 const CURSOR_COLOR = "rgba(255, 255, 255, 0.95)";
 
 /**
@@ -52,6 +55,9 @@ export function drawOverlay(
     }
 
     for (const face of frame.faces) {
+      if (face.features !== null) drawFaceFeatures(ctx, face.features, px);
+
+      ctx.lineWidth = Math.max(2, w / 640);
       const [x, y] = px({ x: face.box.x, y: face.box.y });
       ctx.strokeStyle = FACE_COLOR;
       ctx.strokeRect(x, y, face.box.width * w, face.box.height * h);
@@ -80,6 +86,43 @@ export function drawOverlay(
     ctx.fillStyle = CURSOR_COLOR;
     ctx.beginPath();
     ctx.arc(x, y, ctx.lineWidth, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/**
+ * Feature contours rather than the full tesselation, and no per-point dots.
+ * A face at kiosk distance is maybe 300 px tall: 478 dots on it is a solid
+ * blob that proves the model ran and nothing else. Outlines show whether the
+ * mesh is actually tracking the eyes and mouth, which is the thing you are
+ * looking at the debug overlay to find out.
+ */
+function drawFaceFeatures(
+  ctx: CanvasRenderingContext2D,
+  features: FaceFeatures,
+  px: (p: Vec2) => [number, number],
+): void {
+  ctx.lineWidth = Math.max(1, ctx.canvas.width / 1400);
+  ctx.strokeStyle = MESH_COLOR;
+  ctx.beginPath();
+  for (const contour of FACE_CONTOURS) {
+    for (let i = 0; i < contour.points.length; i++) {
+      const point = at(features.mesh, at(contour.points, i, "contour"), "mesh");
+      if (i === 0) ctx.moveTo(...px(point));
+      else ctx.lineTo(...px(point));
+    }
+    if (contour.closed) ctx.closePath();
+  }
+  ctx.stroke();
+
+  // Iris centres, brighter than the mesh: they are where gaze will come from,
+  // and a mesh that has locked onto the face but not the eyes looks fine until
+  // you can see these sitting still while the person looks around.
+  ctx.fillStyle = IRIS_COLOR;
+  for (const iris of [features.points.leftIris, features.points.rightIris]) {
+    const [x, y] = px(iris);
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(1.5, ctx.canvas.width / 500), 0, Math.PI * 2);
     ctx.fill();
   }
 }

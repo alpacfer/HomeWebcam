@@ -5,14 +5,16 @@
  *   npm run dev            # in one terminal
  *   npm run screenshot     # writes captures/app.png
  *
- * Chrome is launched headless with camera permission pre-granted, so it opens
- * the real /dev/video device and the perception pipeline runs for real. Pass
- * --fake-camera for a deterministic synthetic feed with nobody in front of it.
+ * When start.sh is running, this attaches to its Chrome on port 9222 by default
+ * so the existing page and real camera are reused. Otherwise Chrome is launched
+ * headless with camera permission pre-granted. Pass --fake-camera for a new,
+ * deterministic synthetic feed with nobody in front of it.
  *
  * Usage:
  *   node scripts/screenshot.mjs [--out FILE] [--url URL] [--fake-camera]
  *                              [--width N] [--height N] [--settle MS]
  *                              [--wait-for "JS expression"] [--keys "d,d"]
+ *                              [--attach] [--new-browser] [--port N]
  */
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -28,8 +30,31 @@ const flag = (name, fallback) => {
 };
 const has = (name) => args.includes(`--${name}`);
 
+const requestedUrl = flag("url", "http://127.0.0.1:5173/");
+const stationPort = Number(flag("port", 9222));
+const forceAttach = has("attach");
+const forceNewBrowser = has("new-browser") || has("fake-camera");
+
+async function debuggerIsReady(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+    const targets = await response.json();
+    return targets.some((target) => target.type === "page" && target.url === requestedUrl);
+  } catch {
+    return false;
+  }
+}
+
+const stationIsRunning = await debuggerIsReady(stationPort);
+if (forceAttach && !stationIsRunning) {
+  throw new Error(
+    `No controllable station Chrome found on port ${stationPort}. Run ./start.sh first.`,
+  );
+}
+const attach = forceAttach || (!forceNewBrowser && stationIsRunning);
+
 const opts = {
-  url: flag("url", "http://127.0.0.1:5173/"),
+  url: requestedUrl,
   out: resolve(root, flag("out", "captures/app.png")),
   width: Number(flag("width", 1280)),
   height: Number(flag("height", 720)),
@@ -37,37 +62,40 @@ const opts = {
   waitFor: flag("wait-for", "document.body.classList.contains('is-live')"),
   keys: flag("keys", "").split(",").filter(Boolean),
   fakeCamera: has("fake-camera"),
-  port: 9222 + Math.floor(Math.random() * 200),
+  attach,
+  port: attach ? stationPort : 10_000 + Math.floor(Math.random() * 1000),
 };
 
 const CHROME = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
 
-const chrome = spawn(
-  CHROME.find(Boolean),
-  [
-    "--headless=new",
-    `--remote-debugging-port=${opts.port}`,
-    `--window-size=${opts.width},${opts.height}`,
-    // Grants getUserMedia without a prompt. Safe here: this profile is
-    // throwaway and only ever loads our own localhost origin.
-    "--use-fake-ui-for-media-stream",
-    ...(opts.fakeCamera ? ["--use-fake-device-for-media-stream"] : []),
-    "--autoplay-policy=no-user-gesture-required",
-    // MediaPipe's GPU delegate needs WebGL, which headless serves via SwiftShader.
-    "--enable-unsafe-swiftshader",
-    "--no-first-run",
-    "--no-default-browser-check",
-    `--user-data-dir=${join(root, "captures/.chrome-profile")}`,
-    "about:blank",
-  ],
-  // detached puts Chrome in its own process group. Chrome forks a media
-  // process that holds /dev/video open, and killing only the parent leaks
-  // it - the next run then fails with "Could not start video source".
-  { stdio: ["ignore", "ignore", "pipe"], detached: true },
-);
+const chrome = opts.attach
+  ? null
+  : spawn(
+      CHROME.find(Boolean),
+      [
+        "--headless=new",
+        `--remote-debugging-port=${opts.port}`,
+        `--window-size=${opts.width},${opts.height}`,
+        // Grants getUserMedia without a prompt. Safe here: this profile is
+        // throwaway and only ever loads our own localhost origin.
+        "--use-fake-ui-for-media-stream",
+        ...(opts.fakeCamera ? ["--use-fake-device-for-media-stream"] : []),
+        "--autoplay-policy=no-user-gesture-required",
+        // MediaPipe's GPU delegate needs WebGL, which headless serves via SwiftShader.
+        "--enable-unsafe-swiftshader",
+        "--no-first-run",
+        "--no-default-browser-check",
+        `--user-data-dir=${join(root, "captures/.chrome-profile")}`,
+        "about:blank",
+      ],
+      // detached puts Chrome in its own process group. Chrome forks a media
+      // process that holds /dev/video open, and killing only the parent leaks
+      // it - the next run then fails with "Could not start video source".
+      { stdio: ["ignore", "ignore", "pipe"], detached: true },
+    );
 
 const stderr = [];
-chrome.stderr.on("data", (chunk) => stderr.push(String(chunk)));
+chrome?.stderr.on("data", (chunk) => stderr.push(String(chunk)));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -76,7 +104,9 @@ async function debuggerUrl() {
     try {
       const res = await fetch(`http://127.0.0.1:${opts.port}/json/list`);
       const targets = await res.json();
-      const page = targets.find((t) => t.type === "page");
+      const page =
+        targets.find((target) => target.type === "page" && target.url === opts.url) ??
+        targets.find((target) => target.type === "page");
       if (page?.webSocketDebuggerUrl) return page.webSocketDebuggerUrl;
     } catch {
       // Chrome not listening yet.
@@ -131,14 +161,16 @@ try {
   cdp = await Cdp.connect(await debuggerUrl());
   await cdp.send("Page.enable");
   await cdp.send("Runtime.enable");
-  await cdp.send("Emulation.setDeviceMetricsOverride", {
-    width: opts.width,
-    height: opts.height,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
+  if (!opts.attach) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: opts.width,
+      height: opts.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+  }
 
-  await cdp.send("Page.navigate", { url: opts.url });
+  if (!opts.attach) await cdp.send("Page.navigate", { url: opts.url });
 
   const deadline = Date.now() + 30_000;
   let ready = false;
@@ -160,7 +192,20 @@ try {
   for (const key of opts.keys) {
     await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key, text: key });
     await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key });
-    await sleep(500);
+    const cameraMode = { d: "debug", f: "final" }[key.toLowerCase()];
+    if (cameraMode === undefined) {
+      await sleep(500);
+      continue;
+    }
+
+    const modeDeadline = Date.now() + 15_000;
+    while (Date.now() < modeDeadline) {
+      const activeMode = await cdp.evaluate("document.body.dataset.cameraMode");
+      if (activeMode === cameraMode) break;
+      await sleep(100);
+    }
+    const activeMode = await cdp.evaluate("document.body.dataset.cameraMode");
+    if (activeMode !== cameraMode) throw new Error(`Camera never entered ${cameraMode} mode`);
   }
 
   const hud = await cdp.evaluate("document.getElementById('hud')?.textContent ?? ''");
@@ -172,9 +217,11 @@ try {
   console.log(`[screenshot] HUD:\n${hud.replace(/^/gm, "  ")}`);
 } finally {
   cdp?.close();
-  try {
-    process.kill(-chrome.pid, "SIGKILL");
-  } catch {
-    chrome.kill("SIGKILL");
+  if (chrome !== null) {
+    try {
+      process.kill(-chrome.pid, "SIGKILL");
+    } catch {
+      chrome.kill("SIGKILL");
+    }
   }
 }

@@ -18,10 +18,12 @@ npm run models       # downloads model files into public/models/ (required once)
 npm run dev          # http://127.0.0.1:5173
 npm run check        # biome + tsc + vitest. Must pass before you commit.
 npm run fix          # auto-fix formatting and lint
-npm run screenshot   # captures captures/app.png from a real Chrome (see below)
+npm run screenshot   # attaches to start.sh's live Chrome when available
 ```
 
-`npm run dev` must be running in another terminal before `npm run screenshot`.
+Run `./start.sh` for station work. It starts the dev server and a dedicated
+Chrome app with a localhost-only control endpoint, so agents can inspect and
+capture the live real-camera UI without opening a competing camera process.
 
 ## Layout
 
@@ -144,10 +146,13 @@ Any change that alters what is on screen must be confirmed with a screenshot:
 npm run screenshot -- --out captures/my-change.png
 ```
 
-It launches a real headless Chrome against the real webcam, waits for the app to
-go live, and prints the HUD text alongside the image path. Add `--fake-camera`
-for a deterministic synthetic feed, or `--keys d` to toggle the debug overlay
-off before capturing.
+When `./start.sh` is running, the command attaches to its live Chrome by default,
+waits for the app to go live, and prints the HUD text alongside the image path.
+This is the normal station verification path: reuse the existing camera owner
+instead of launching another browser. If there is no controllable station
+window it falls back to a temporary headless Chrome. Add `--attach` to require
+the live station, `--new-browser` to require isolation, or `--fake-camera` for a
+deterministic synthetic feed. Use `--keys d` or `--keys f` to select a mode.
 
 Two things about headless captures are expected and are not bugs. Processed fps
 reads 3-6, because Chrome falls back to a software rasterizer. And the overlay

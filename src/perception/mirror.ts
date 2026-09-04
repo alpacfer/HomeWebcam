@@ -1,4 +1,4 @@
-import type { Rect, Vec2 } from "./types.js";
+import type { HeadPose, Rect, Vec2 } from "./types.js";
 
 /**
  * The single place the camera-to-screen flip happens.
@@ -33,4 +33,17 @@ export function boxToMirroredScreen(
     width: normWidth,
     height: box.height / h,
   };
+}
+
+/**
+ * Camera-space head pose -> mirrored screen space.
+ *
+ * Reflecting the world in a vertical plane reverses the two rotations that have
+ * a left and a right - yaw and roll - and leaves the one that does not, pitch.
+ * Getting this wrong produces a head that leans the wrong way while the mesh
+ * drawn over it leans the right way, which reads as a rendering glitch rather
+ * than the sign error it is.
+ */
+export function poseToMirroredScreen(pose: HeadPose): HeadPose {
+  return { yaw: -pose.yaw, pitch: pose.pitch, roll: -pose.roll };
 }

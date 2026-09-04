@@ -13,6 +13,9 @@ cd "$REPO"
 
 URL="http://127.0.0.1:5173"
 PORT=5173
+DEBUG_PORT="${HOMEWEBCAM_DEBUG_PORT:-9222}"
+PROFILE_DIR="${XDG_RUNTIME_DIR:-/tmp}/homewebcam-chrome-${UID}"
+BROWSER_PID=""
 
 say() { printf '\n\033[1;36m▸ %s\033[0m\n' "$1"; }
 die() { printf '\n\033[1;31m✗ %s\033[0m\n\n' "$1" >&2; read -rp "Press Enter to close. "; exit 1; }
@@ -40,6 +43,10 @@ if command -v ss >/dev/null && ss -ltn 2>/dev/null | grep -q ":$PORT "; then
   die "Something is already listening on port $PORT. Close it and try again."
 fi
 
+if [ -z "${HOMEWEBCAM_NO_BROWSER:-}" ] && command -v ss >/dev/null && ss -ltn 2>/dev/null | grep -q ":$DEBUG_PORT "; then
+  die "Something is already listening on Chrome control port $DEBUG_PORT. Close it and try again."
+fi
+
 # The camera is exclusive: a leftover browser holding it makes the mirror fail
 # with "Could not start video source" and no obvious cause.
 if command -v fuser >/dev/null && fuser /dev/video0 >/dev/null 2>&1; then
@@ -50,7 +57,11 @@ fi
 say "Starting the dev server"
 npm run dev -- --host 127.0.0.1 --port "$PORT" --strictPort &
 SERVER=$!
-trap 'kill "$SERVER" 2>/dev/null || true' EXIT INT TERM
+cleanup() {
+  if [ -n "$BROWSER_PID" ]; then kill "$BROWSER_PID" 2>/dev/null || true; fi
+  kill "$SERVER" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
 
 # Wait for Vite to actually accept connections before opening a window, so the
 # browser never lands on a connection-refused page.
@@ -69,7 +80,18 @@ say "Opening the mirror at $URL"
 # Chrome's --app window has no address bar or tabs, which is what the station
 # wants. Grant camera access once and Chrome remembers it for this origin.
 if command -v google-chrome >/dev/null; then
-  google-chrome --app="$URL" --autoplay-policy=no-user-gesture-required >/dev/null 2>&1 &
+  mkdir -p "$PROFILE_DIR"
+  chmod 700 "$PROFILE_DIR"
+  google-chrome \
+    --app="$URL" \
+    --autoplay-policy=no-user-gesture-required \
+    --no-first-run \
+    --remote-debugging-address=127.0.0.1 \
+    --remote-debugging-port="$DEBUG_PORT" \
+    --use-fake-ui-for-media-stream \
+    --user-data-dir="$PROFILE_DIR" \
+    >/dev/null 2>&1 &
+  BROWSER_PID=$!
 elif command -v xdg-open >/dev/null; then
   xdg-open "$URL" >/dev/null 2>&1 &
 else
@@ -80,7 +102,9 @@ fi
 cat <<EOF
 
   Mirror running at $URL
-    d          toggle the debug overlay and HUD
+    D          debug camera and diagnostics
+    F          final visitor camera and UI
+    CDP        127.0.0.1:$DEBUG_PORT (local verification only)
     Ctrl+C     stop the server
 
 EOF

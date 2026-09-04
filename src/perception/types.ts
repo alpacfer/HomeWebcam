@@ -54,11 +54,72 @@ export interface Identity {
   similarity: number;
 }
 
+/**
+ * Expression signals, 0..1, from MediaPipe's blendshapes.
+ *
+ * Blendshapes rather than geometry measured off the mesh: the model already
+ * normalizes for head size, distance and rotation, which a raw lip-gap-over-
+ * face-height ratio does not. A smile read geometrically changes value when the
+ * visitor steps back; this does not.
+ *
+ * Left and right are the VISITOR's, as everywhere else in this file.
+ */
+export interface Expression {
+  /** Mean of the two mouth corners. */
+  smile: number;
+  /** Jaw opening. Speech hovers around 0.1-0.3; a deliberate gape approaches 1. */
+  mouthOpen: number;
+  /** Mean of the inner and outer brow raises. */
+  browRaise: number;
+  /** 1 = fully closed. Both at once is a blink; one is a wink. */
+  blinkLeft: number;
+  blinkRight: number;
+}
+
+/**
+ * Head orientation in degrees, in mirrored screen space.
+ *
+ * Signs follow the screen, not the camera: yaw is negative when the visitor
+ * turns toward the left of the screen they are looking at, positive toward the
+ * right, and 0 facing the station. Pitch is positive looking up, roll positive
+ * tilting the head toward the right of the screen.
+ */
+export interface HeadPose {
+  yaw: number;
+  pitch: number;
+  roll: number;
+}
+
+/** Mesh points worth naming, so consumers never index the mesh themselves. */
+export interface FacePoints {
+  noseTip: Vec2;
+  chin: Vec2;
+  forehead: Vec2;
+  leftEye: Vec2;
+  rightEye: Vec2;
+  /** Iris centres, the raw material for gaze. Fall back to the eye centre. */
+  leftIris: Vec2;
+  rightIris: Vec2;
+  mouthCenter: Vec2;
+}
+
+/** What a face is doing, as opposed to merely where it is. */
+export interface FaceFeatures {
+  /** 478 mesh points in mirrored screen space. Index with FACE from ./landmarks.ts. */
+  mesh: Vec2[];
+  points: FacePoints;
+  expression: Expression;
+  /** Null when the model returned no transformation matrix for this face. */
+  headPose: HeadPose | null;
+}
+
 export interface FaceObservation {
   /** Stable for as long as the face keeps being tracked across frames. */
   trackId: string;
   box: Rect;
   confidence: number;
+  /** Null when CONFIG.faces.features is off, or the plain detector produced it. */
+  features: FaceFeatures | null;
   identity: Identity | null;
 }
 

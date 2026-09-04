@@ -18,15 +18,36 @@ export const CONFIG = {
      * So asking for 1080p, or letting the browser fall back to YUYV, costs
      * half the frame rate or more. See docs/hardware.md before changing these.
      */
-    width: 1280,
-    height: 720,
-    frameRate: 60,
+    modes: {
+      /** The detector-tuning view: maximum motion fidelity on the station camera. */
+      debug: {
+        width: 1280,
+        height: 720,
+        frameRate: 60,
+        /** 50 admits a camera reporting 59.94 while rejecting the 30 fps mode. */
+        minFrameRate: 50,
+      },
+      /** The visitor view: maximum native 16:9 detail on the station camera. */
+      final: {
+        width: 1920,
+        height: 1080,
+        frameRate: 30,
+        /** Allows common 29.97 fps reporting without accepting a low-rate fallback. */
+        minFrameRate: 25,
+      },
+    },
     /** Pin a specific camera by deviceId once the station hardware is fixed. */
     deviceId: null as string | null,
   },
 
   hands: {
     enabled: true,
+    /**
+     * Run the hand pass every Nth camera frame. 1 = every frame.
+     * The cursor is driven by fingertips, so hands stay at full rate: at 60 fps
+     * a decimated hand is a cursor that visibly steps. See ADR 0006.
+     */
+    everyNFrames: 1,
     maxHands: 2,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5,
@@ -36,7 +57,25 @@ export const CONFIG = {
 
   faces: {
     enabled: true,
+    /**
+     * Run the face pass every Nth camera frame. 2 halves its cost and still
+     * updates at 30 Hz, which is far more than a head moving at hallway speed
+     * needs. The skipped frames reuse the previous result, so a face never
+     * blinks out. Raise it if the HUD shows the face pass eating the budget.
+     * Verify at the station.
+     */
+    everyNFrames: 2,
+    maxFaces: 2,
     minDetectionConfidence: 0.5,
+    /**
+     * Facial features: the 478-point mesh, expression and head pose.
+     *
+     * This swaps the plain face detector for FaceLandmarker rather than adding
+     * to it. FaceLandmarker finds faces itself, so running both would pay for
+     * face detection twice and buy nothing. Turn it off for the cheap
+     * presence-only path on a weaker GPU. See ADR 0007.
+     */
+    features: true,
     /** No-op until an IdentityDetector is implemented. See detectors/identity.ts. */
     identifyPeople: false,
   },
@@ -51,8 +90,14 @@ export const CONFIG = {
   },
 
   ui: {
-    /** Landmark skeletons, boxes and the HUD. Toggle at runtime with "d". */
-    debugOverlay: true,
+    /** Visitors start in the clean, high-detail presentation. D/F switch modes. */
+    defaultCameraMode: "final" as const,
     mirrored: true,
+    /**
+     * The HUD rewrites its text node, which invalidates layout. Doing that 60
+     * times a second to display a number that a human reads a few times a
+     * second is pure overhead, so it is throttled.
+     */
+    hudHz: 10,
   },
 } as const;

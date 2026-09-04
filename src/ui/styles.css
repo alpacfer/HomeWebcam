@@ -53,9 +53,22 @@ body {
 
 #camera {
   object-fit: cover;
+  image-rendering: auto;
   /* Hidden until frames arrive, so the station never shows a black flash. */
   opacity: 0;
-  transition: opacity 400ms ease-out;
+  transition:
+    opacity 400ms ease-out,
+    filter 250ms ease-out;
+}
+
+/* The debug view is the unstyled image that the perception models receive. */
+body[data-camera-mode="debug"] #camera {
+  filter: none;
+}
+
+/* Restrained starting correction; verify at the station under its actual light. */
+body[data-camera-mode="final"] #camera {
+  filter: contrast(1.04) saturate(1.06);
 }
 
 #camera.is-mirrored {
@@ -73,6 +86,11 @@ body.is-live #camera {
   inset: 0;
   pointer-events: none;
   background: radial-gradient(ellipse at center, transparent 45%, rgba(0, 0, 0, 0.55) 100%);
+  transition: opacity 250ms ease-out;
+}
+
+body[data-camera-mode="debug"] #stage::after {
+  opacity: 0;
 }
 
 #hud {

@@ -8,8 +8,11 @@ import type { Detector, FaceObservation } from "../types.js";
 /**
  * Face presence and position, with a stable track id per person.
  *
- * This answers "is somebody there, and where" - not "who". Identity lives in
- * ./identity.ts because MediaPipe ships no face-recognition task.
+ * This answers "is somebody there, and where" - not "who" and not "doing what".
+ * Identity lives in ./identity.ts because MediaPipe ships no face-recognition
+ * task. Features live in ./face-features.ts, which replaces this detector when
+ * CONFIG.faces.features is on: BlazeFace is a tenth of the model and a fraction
+ * of the per-frame cost, so it stays as the cheap presence-only option.
  */
 export class FacesDetector implements Detector<FaceObservation[]> {
   readonly name = "faces";
@@ -43,6 +46,7 @@ export class FacesDetector implements Detector<FaceObservation[]> {
       trackId: ids[i] ?? `face-unassigned-${i}`,
       box,
       confidence: detections[i]?.categories[0]?.score ?? 0,
+      features: null,
       identity: null,
     }));
   }

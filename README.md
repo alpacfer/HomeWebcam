@@ -15,8 +15,9 @@ Double-click **HomeWebcam.desktop**, or from a terminal:
 ```
 
 First run installs dependencies and downloads ~18 MB of detection models; after
-that it goes straight to the mirror. Press `d` to toggle the debug overlay,
-`Ctrl+C` to stop.
+that it goes straight to the final visitor view. Press `D` for the raw 720p/60
+processing view and debug overlay, or `F` for the clean 1080p/30 visitor view.
+Press `Ctrl+C` to stop.
 
 ## What works today
 
@@ -34,8 +35,13 @@ seam is in place and the reasoning is in
 ```bash
 npm run dev          # dev server on http://127.0.0.1:5173
 npm run check        # lint + types + tests, all of it
-npm run screenshot   # capture the running app from a real Chrome
+npm run screenshot   # attach to start.sh's Chrome and capture the live app
 ```
+
+`start.sh` keeps its station Chrome controllable on localhost port 9222. The
+screenshot command detects and reuses that window by default, so it does not
+compete with the already-open camera. Use `--fake-camera` when an isolated,
+deterministic screenshot is preferable.
 
 [AGENTS.md](AGENTS.md) is the working guide: layout, the one contract, and the
 gotchas that are not guessable from the code. It is written for coding agents
