@@ -17,6 +17,8 @@ await mkdir(destDir, { recursive: true });
 let failed = 0;
 for (const [name, model] of Object.entries(manifest.models)) {
   const dest = join(destDir, model.file);
+  // Whisper arrives as a small tree, not a single file. See models.json.
+  await mkdir(dirname(dest), { recursive: true });
   const existing = await stat(dest).catch(() => null);
   if (existing && existing.size === model.bytes) {
     console.log(`[models] ok       ${name} (cached)`);

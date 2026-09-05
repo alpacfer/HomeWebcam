@@ -3,12 +3,15 @@ import { CONFIG } from "../config.js";
 import type { CursorState } from "../interaction/cursor.js";
 import type { DetectorTimings } from "../perception/engine.js";
 import type { GestureName, PerceptionFrame, Rect, Vec2 } from "../perception/types.js";
+import type { VoiceStatus } from "../perception/voice.js";
 import {
   builtinScenarios,
   type PuppetController,
   type PuppetPose,
   type PuppetScenario,
 } from "./puppet.js";
+import type { DebugRecorder, RecorderState } from "./recorder.js";
+import type { TaskPanel, TaskPanelState } from "./tasks.js";
 
 /**
  * The station's debug surface: one structured snapshot of everything worth
@@ -28,18 +31,28 @@ import {
 /** What the frame loop knows. Supplied by App. */
 export interface LoopSnapshot {
   live: boolean;
+  voice: VoiceStatus;
   cameraMode: CameraMode;
   cameraSource: string;
   fps: number;
   capturedFps: number;
+  sinceLastFrameMs: number;
   timings: DetectorTimings;
+  /** Why the last camera mode change failed, if it did. */
+  error: string | null;
+  /** The last uncaught error. A frame loop that died says so here. */
+  crash: string | null;
   frame: PerceptionFrame | null;
   cursor: CursorState | null;
 }
 
 export interface DebugHost {
   loop(): LoopSnapshot;
+  /** Tells the ear it heard something, without a microphone. See ADR 0016. */
+  say(text: string): void;
   readonly puppet: PuppetController;
+  readonly recorder: DebugRecorder;
+  readonly tasks: TaskPanel;
 }
 
 export interface PanelSnapshot {
@@ -83,8 +96,22 @@ export interface StationSnapshot {
     source: string;
     fps: number;
     capturedFps: number;
+    /**
+     * How long since a frame was actually processed. Every rate in here is a
+     * rolling average that holds its last value, so a loop that has stopped
+     * being handed frames reports the speed it managed before it stopped. This
+     * is the number that says whether any of the others are current.
+     */
+    sinceLastFrameMs: number;
     timings: DetectorTimings;
+    /**
+     * A mode change that failed reopens the profile that worked, so the station
+     * keeps running and the keystroke looks ignored. This says what happened.
+     */
+    error: string | null;
   };
+  /** The last uncaught error anywhere in the page, or null. */
+  crash: string | null;
   hands: Array<{
     side: string;
     gesture: GestureName;
@@ -97,6 +124,12 @@ export interface StationSnapshot {
   experience: { mode: string; phase: string };
   menu: { dock: Vec2; panels: PanelSnapshot[] };
   picture: { countdown: number; countdownVisible: boolean; statusVisible: boolean };
+  /** The debug video recorder. Only reachable in debug camera mode. See ADR 0014. */
+  recording: RecorderState;
+  /** What the station has been asked to do in front of the camera. See ADR 0015. */
+  tasks: TaskPanelState;
+  /** The ear: the microphone, the speech model, and what it last heard. ADR 0016. */
+  voice: VoiceStatus;
   /** Text a visitor can read. The interface is meant to have none. See ADR 0010. */
   visibleText: string[];
 }
@@ -114,6 +147,29 @@ export interface StationBridge {
     readonly active: boolean;
     finished(): boolean;
   };
+  /**
+   * The corner control, without a mouse. `save` fills in the dialog that is
+   * waiting for a name and resolves with the filename it landed under.
+   */
+  recorder: {
+    start(): void;
+    stop(): void;
+    save(name: string, description: string): Promise<string>;
+    discard(): void;
+  };
+  /**
+   * The task list, without a mouse. `record` presses a step's button; the take
+   * that follows is filed against that step when it is saved.
+   */
+  tasks: {
+    refresh(): Promise<void>;
+    record(taskId: string, stepId: string): void;
+  };
+  /**
+   * Puts words in the station's ear. They arrive marked as injected, so a check
+   * that passes this way can never be quoted as the speech model working.
+   */
+  say(text: string): void;
 }
 
 declare global {
@@ -152,6 +208,17 @@ export function installDebugBridge(host: DebugHost): void {
       },
       finished: () => host.puppet.finished(performance.now()),
     },
+    recorder: {
+      start: () => host.recorder.start(),
+      stop: () => host.recorder.stop(),
+      save: (name, description) => host.recorder.saveWith(name, description),
+      discard: () => host.recorder.discard(),
+    },
+    tasks: {
+      refresh: () => host.tasks.refresh(),
+      record: (taskId, stepId) => host.tasks.recordStep(taskId, stepId),
+    },
+    say: (text) => host.say(text),
   };
   window.__station = bridge;
   markSource("camera");
@@ -195,8 +262,11 @@ function snapshot(host: DebugHost): StationSnapshot {
       source: loop.cameraSource,
       fps: loop.fps,
       capturedFps: loop.capturedFps,
+      sinceLastFrameMs: loop.sinceLastFrameMs,
       timings: loop.timings,
+      error: loop.error,
     },
+    crash: loop.crash,
     hands: (frame?.hands ?? []).map((hand) => ({
       side: hand.side,
       gesture: hand.gesture,
@@ -215,6 +285,9 @@ function snapshot(host: DebugHost): StationSnapshot {
     },
     menu: readMenu(),
     picture: readPicture(),
+    recording: host.recorder.state,
+    tasks: host.tasks.state,
+    voice: loop.voice,
     visibleText: readVisibleText(),
   };
 }

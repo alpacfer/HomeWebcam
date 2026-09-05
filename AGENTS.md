@@ -5,7 +5,8 @@ up and drive the interface with their hands, face and body. No keyboard, no
 mouse, no touch. The camera feed is the background of the whole UI.
 
 Browser app: TypeScript + Vite, no UI framework. Perception is MediaPipe Tasks
-Vision (WASM + WebGL), running fully on-device.
+Vision (WASM + WebGL) for hands and faces, and Whisper tiny.en through
+transformers.js for speech. All of it runs on-device.
 
 ## Commands
 
@@ -21,9 +22,33 @@ npm run check        # biome + tsc + vitest + records. Must pass before you comm
 npm run fix          # auto-fix formatting and lint
 npm run station      # ask the live station anything. Start here.
 npm run station -- focus  # required before believing any frame rate
-npm run verify       # drive every interaction through the live station, ~30 s
+npm run task         # ask the person at the station to do something on camera
+npm run verify       # drive every interaction through the live station, ~40 s
 npm run screenshot   # attaches to start.sh's live Chrome when available
 ```
+
+### Asking a person
+
+Some questions need a body in the room: a hand at an angle, a face against a
+bright window, a gesture the model only fails on when a real arm makes it.
+`npm run task` writes one down; it appears in the debug view, and each step is a
+button that records while it is being performed.
+
+```bash
+npm run task -- new "Victory sometimes does not open Picture" \
+  "Stand two metres back and hold a Victory sign until the badge fills" \
+  "Do it again with your hand half a metre from the camera" \
+  --about "Two people reported holding Victory and nothing happening."
+npm run task -- list
+npm run task -- show latest            # digest, notes, errors, file paths
+npm run task -- show latest --frames 20  # a sampled walk through the trace
+npm run task -- done <id> | reopen <id> | rm <id>
+```
+
+The answer is a recording plus a digest - how much of the take had a hand in it,
+which gestures came back, which tile the cursor was over, what the frame rate
+was. Read the digest first; open the video when it says something interesting.
+See [ADR 0015](docs/adr/0015-camera-tasks.md).
 
 ### Asking the station
 
@@ -39,7 +64,10 @@ opened. It never launches a browser: `/dev/video0` allows one owner.
 | `probe SEL --ring --style a,b` | Geometry, computed styles, and which way a progress arc is *actually* filled, read off the pixels. |
 | `perf --glass` | Frame-rate A/B with CSS overrides. Warns when the window is unfocused, because then it is measuring the throttle. |
 | `puppet wave\|point\|victory\|palm\|both\|stop` | Drive scripted hands into the running app. |
-| `verify` | All thirteen interaction checks, with screenshots. |
+| `record 6 --task latest [--note "..."]` | Answer a task step with scripted hands. Without `--note` the dialog is left for a person. |
+| `say "stop"` | Put words in the station's ear without a microphone. They arrive marked `injected`. |
+| `record 8 [--name "..." --note "..."]` | Record what the models are being given. Without `--name` it leaves the dialog at the station for a person to fill in; `record save --name "..."` and `record discard` finish one that is waiting. |
+| `verify` | All seventeen interaction checks, with screenshots. |
 
 Add `--reload` to `state`, `shoot` and `screenshot` to put the station back to
 what a visitor sees first; it keeps whatever state the last person left.
@@ -88,9 +116,12 @@ src/
     detectors/faces.ts    Face boxes + stable track ids.
     mirror.ts            The camera-to-screen x flip. The ONLY place it happens.
     detectors/identity.ts "Who is this?" - deliberately a no-op. See ADR 0003.
+    voice.ts             The ear: microphone, loudness gate, utterances.
+    voice-worker.ts      Whisper tiny.en, on its own thread. See ADR 0016.
     tracker.ts           Centroid tracker that assigns face track ids.
     landmarks.ts         Named hand-landmark indices. Never write raw 8 or 12.
   interaction/cursor.ts   Raised hand -> pointer with dwell-to-click.
+  interaction/voice-commands.ts What a sentence means. One command: "stop".
   interaction/soft-mount.ts  Springs and the brush force. No DOM, unit-tested.
   interaction/hand-motion.ts Palm velocity, low-passed, per hand.
   interaction/menu-physics.ts Where the menu is, how lit, and what it has picked.
@@ -101,6 +132,13 @@ src/
   debug/bridge.ts        window.__station: one typed snapshot. Dev builds only.
   debug/puppet.ts        Scripted hands. Replaces the detectors when armed.
   debug/hand-fixtures.ts 21 landmarks per gesture, shaped like MediaPipe's.
+  debug/recorder.ts      Records the frames the models get, plus a perception
+                         trace, for a bug report. Debug camera mode only.
+  debug/tasks.ts         Things to go and do in front of the camera. Each step
+                         is a button that records itself.
+  debug/trace.ts         What a take remembers per frame, and the digest a run
+                         is read by. Pure; unit-tested.
+scripts/tasks.mjs         Writes and reads tasks. Needs no running station.
 scripts/station.mjs       The debug CLI. Everything asks the station through it.
 scripts/lib/cdp.mjs       The one CDP client. Do not write a second one.
   lib/                   smoothing, fps, assert helpers
@@ -111,6 +149,8 @@ docs/hardware.md          Real measured camera capabilities. Read before
 docs/adr/                 Decisions and their rationale. Add one when you make
                           a choice a future reader would question.
 docs/frictions/           Obstacles, root causes, corrections and integrated improvements.
+recordings/               Debug recordings. Personal data, gitignored, local.
+tasks/                    Open questions and the runs that answered them.
 ```
 
 ## The one contract
@@ -185,6 +225,20 @@ These are the traps that cost real time. None are guessable from the code.
   at nine, which fills a progress ring backwards, and a ring at 0% or 100% looks
   the same either way. Every arc in the interface is the one shared `.ring`
   class; `npm run check` rejects a second one. See friction 0004.
+- **The ear is a second model on the same machine.** Whisper runs in a worker,
+  takes 0.3-1.5 s per utterance, and answers a quiet room with "you" or "thank
+  you" - it transcribes, it does not detect. `CONFIG.voice.activationLevel` is
+  the gate and `CONFIG.voice.hallucinations` is the denylist for whole
+  utterances. See ADR 0016.
+- **A still picture with a plausible frame rate is a window nobody is painting.**
+  Chrome stops compositing a covered window, `requestVideoFrameCallback` stops
+  with it, and every rate holds its last value while `visibilityState` still
+  says "visible". `station state` now says so; see friction 0022.
+- **A local file that is missing does not 404 by default.** Vite answers with
+  index.html and a 200, so a missing model reaches the runtime as a web page and
+  comes back as "protobuf parsing failed". The dev server now 404s under
+  `/models/`, `/onnx/` and `/mediapipe/` and lists misses at `/api/missing`.
+  See friction 0021.
 - **A puppet run is not camera evidence.** `npm run verify` invents its hands, so
   it can prove that a held Victory opens Picture mode and can never prove that
   the model recognises a Victory. The station wears a badge while it drives and
@@ -194,9 +248,27 @@ These are the traps that cost real time. None are guessable from the code.
   and every frame rate measured then is a measurement of the cap. `station state`
   and `station perf` say so; a performance claim must name the camera mode,
   whether a person was in frame, and that the window was focused.
-- **Faces and photos are personal data.** `captures/` and `data/faces/` are
-  gitignored. Never commit an image, never send a frame off the machine, never
-  add a network call to a detector. On-device is a requirement, not a default.
+- **Voice is personal data too.** No recording contains audio, no transcript is
+  written to disk, and nothing leaves the machine. See ADR 0016.
+- **Faces and photos are personal data.** `captures/`, `recordings/`, `tasks/`
+  and `data/faces/` are gitignored. Never commit an image, never send a frame off
+  the machine, never add a network call to a detector. On-device is a
+  requirement, not a default.
+- **A debug recording is the unmirrored camera image.** It is what the detectors
+  are handed, one layer before the x flip, so a landmark in the trace does not
+  line up with the video until you mirror it back. The manifest says
+  `"mirrored": false` for exactly this reason. See ADR 0014.
+- **`hidden` loses the cascade to any display rule.** The stylesheet forces
+  `[hidden] { display: none !important }` because a class that sets a display
+  outranks the attribute and leaves the element on screen. Twice. See friction
+  0019.
+- **A task run says where its hands came from.** `perceptionSource` travels with
+  every run, and anything that is not plainly `camera` reads as `unknown` rather
+  than as a person. The server keeps that field on purpose; see friction 0020.
+- **A text field steals the station's shortcuts.** `D`, `F`, `P` and `C` are
+  letters, so `app.ts` ignores them while focus is in an input. Any new field
+  must give focus back when it goes away, or the station stops answering its own
+  keyboard. See friction 0018.
 
 ## Conventions
 

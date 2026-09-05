@@ -6,9 +6,16 @@ dist/
 # Fetched at install time, never committed (see npm run models / postinstall).
 public/models/
 public/mediapipe/
+public/onnx/
 
 # Captured photos and enrolled face data are personal data. Never commit.
 captures/
 data/faces/
 
 CLAUDE.local.md
+
+# Debug recordings are camera footage of whoever was at the station. Never commit.
+recordings/
+
+# Tasks reference recordings, which are camera footage. Keep them off the repo.
+tasks/

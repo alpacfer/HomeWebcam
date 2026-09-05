@@ -1,5 +1,7 @@
 /**
- * Grants camera access to the station origin in Chrome's own profile.
+ * Grants camera and microphone access to the station origin in Chrome's own
+ * profile. The microphone is for the speech model (ADR 0016); it is granted the
+ * same way and for the same reason as the camera.
  *
  * The alternative was --use-fake-ui-for-media-stream, which auto-accepts every
  * capture request. Chrome lists that flag as unsupported and puts a yellow
@@ -37,6 +39,9 @@ function chromeNow() {
   return String((Date.now() + EPOCH_DELTA_MS) * 1000);
 }
 
+/** The content settings the station needs, in Chrome's own names. */
+const DEVICES = ["media_stream_camera", "media_stream_mic"];
+
 export async function seedCameraPermission(profileDir, origin) {
   const file = join(profileDir, "Default", "Preferences");
 
@@ -49,19 +54,19 @@ export async function seedCameraPermission(profileDir, origin) {
     // does not find.
   }
 
-  const exceptions = descend(prefs, [
-    "profile",
-    "content_settings",
-    "exceptions",
-    "media_stream_camera",
-  ]);
   const pattern = `${origin},*`;
-  if (exceptions[pattern]?.setting === ALLOW) return "already granted";
+  const granted = [];
+  for (const device of DEVICES) {
+    const exceptions = descend(prefs, ["profile", "content_settings", "exceptions", device]);
+    if (exceptions[pattern]?.setting === ALLOW) continue;
+    exceptions[pattern] = { last_modified: chromeNow(), setting: ALLOW };
+    granted.push(device.replace("media_stream_", ""));
+  }
+  if (granted.length === 0) return "camera and microphone already granted";
 
-  exceptions[pattern] = { last_modified: chromeNow(), setting: ALLOW };
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, JSON.stringify(prefs));
-  return "granted";
+  return `granted ${granted.join(" and ")}`;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -77,6 +82,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.warn(
       `[camera-permission] could not preset it (${error instanceof Error ? error.message : String(error)}).`,
     );
-    console.warn("[camera-permission] Chrome will ask for the camera once; click Allow.");
+    console.warn(
+      "[camera-permission] Chrome will ask for the camera and microphone once; click Allow.",
+    );
   }
 }

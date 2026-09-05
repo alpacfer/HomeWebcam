@@ -29,6 +29,7 @@ function frameWith(hands: Array<{ at: Vec2; gesture: GestureName }>, t: number):
     seq: Math.round(t),
     t,
     faces: [],
+    heard: [],
     hands: hands.map((hand) =>
       fixtureHand({
         indexTip: hand.at,
@@ -114,6 +115,7 @@ describe("ExperienceUi", () => {
       seq: 1,
       t: 0,
       faces: [],
+      heard: [],
       hands: [
         fixtureHand({
           indexTip: { x: 0.5, y: 0.4 },

@@ -21,6 +21,12 @@
                                                         ui/experience.ts
 ```
 
+```
+  microphone ──> perception/voice.ts ──> voice-worker.ts (Whisper, own thread)
+                                              │
+                                              └──> PerceptionFrame.heard
+```
+
 `app.ts` owns the loop and is the only file that knows about all four layers.
 
 ## Why the layers are cut here
@@ -60,9 +66,9 @@ mirrored video underneath it because the numbers arrive pre-flipped.
 
 ## The debug layer
 
-`src/debug/` is the only part of the codebase that exists for us rather than for a visitor, and it
-is gated behind `import.meta.env.DEV`. `bridge.ts` publishes one typed snapshot on
-`window.__station`; `puppet.ts` produces `PerceptionFrame`s from a script, and `app.ts` takes its
+`src/debug/` is the only part of the codebase that exists for us rather than for a visitor.
+`bridge.ts` publishes one typed snapshot on `window.__station` and `puppet.ts` produces
+`PerceptionFrame`s from a script; both are gated behind `import.meta.env.DEV`, and `app.ts` takes its
 frame from the puppet instead of the detectors while one is armed.
 
 That seam is the perception contract doing its job: a puppet is just another source of the only type
@@ -70,15 +76,42 @@ anything above it consumes. It is also why the station marks itself while one is
 above genuinely cannot tell, so a person looking at a screenshot must be able to. See
 [ADR 0011](adr/0011-puppet-perception.md).
 
+`tasks.ts` sits on top of the recorder: a question written from a keyboard, shown in the debug view,
+and answered by a take against one of its steps. What comes back is filed with a digest of the
+trace, so a run can be read without opening the video. The files are the interface between the two
+halves - `scripts/tasks.mjs` writes them with no station running, the station appends only what it
+produced. See [ADR 0015](adr/0015-camera-tasks.md).
+
+`recorder.ts` is the exception to the gate. It records the camera stream the detectors are reading,
+alongside a per-frame trace of what they made of it, and it is reachable from debug camera mode in
+any build the station runs - the same position the picture flow is in, and for the same reason: both
+write through a localhost endpoint that exists wherever the station's own server does. It is the one
+piece of `src/debug/` a person operates by hand, which is why debug mode is also the one mode with a
+mouse pointer. See [ADR 0014](adr/0014-debug-recordings.md).
+
+## The ear
+
+Speech is a sense, so it arrives the way every other sense does: as part of
+`PerceptionFrame`. `voice.ts` opens the camera's microphone, gates it on
+loudness, and hands each stretch of speech to a worker running Whisper tiny.en;
+what comes back is an `Utterance` on the next frame, and
+`interaction/voice-commands.ts` decides whether it is a command or a
+description being dictated. It is a worker because transcribing a sentence takes
+about a second and the frame loop has 16.7 ms. See
+[ADR 0016](adr/0016-on-device-speech.md).
+
 ## Everything runs on-device
 
-No frame, embedding or face ever leaves the machine. Models are served from our
+No frame, embedding, face or word ever leaves the machine. Models are served from our
 own origin (`public/models/`, `public/mediapipe/`) rather than a CDN, so the
 station keeps working when the network does not, and so no third party sees a
 request pattern that reveals when someone is standing in the hallway.
 
-`captures/` and `data/faces/` are gitignored. This is a hallway camera pointed
-at guests; the privacy posture is part of the design, not a setting.
+`captures/`, `recordings/`, `tasks/` and `data/faces/` are gitignored. This is a hallway
+camera pointed at guests; the privacy posture is part of the design, not a
+setting. A debug recording is the strongest form of that data the station can
+produce - seconds of video of whoever was standing there - so it is written
+locally, named by hand, and never leaves the machine.
 
 ## Serving the station
 

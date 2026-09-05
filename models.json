@@ -1,5 +1,5 @@
 {
-  "$comment": "Single source of truth for model assets. Read by scripts/fetch-models.mjs and by src/perception/models.ts. All URLs verified reachable 2026-09-04.",
+  "$comment": "Single source of truth for model assets. Read by scripts/fetch-models.mjs and by src/perception/models.ts. All URLs verified reachable 2026-09-05.",
   "destDir": "public/models",
   "models": {
     "gestureRecognizer": {
@@ -21,6 +21,41 @@
       "file": "pose_landmarker_lite.task",
       "url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
       "bytes": 5777746
+    },
+    "whisperEncoder": {
+      "file": "whisper-tiny.en/onnx/encoder_model_int8.onnx",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny.en/resolve/main/onnx/encoder_model_int8.onnx",
+      "bytes": 10124977
+    },
+    "whisperDecoder": {
+      "file": "whisper-tiny.en/onnx/decoder_model_merged_uint8.onnx",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny.en/resolve/main/onnx/decoder_model_merged_uint8.onnx",
+      "bytes": 30718880
+    },
+    "whisperConfig": {
+      "file": "whisper-tiny.en/config.json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny.en/resolve/main/config.json",
+      "bytes": 2197
+    },
+    "whisperGenerationConfig": {
+      "file": "whisper-tiny.en/generation_config.json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny.en/resolve/main/generation_config.json",
+      "bytes": 1646
+    },
+    "whisperPreprocessorConfig": {
+      "file": "whisper-tiny.en/preprocessor_config.json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny.en/resolve/main/preprocessor_config.json",
+      "bytes": 339
+    },
+    "whisperTokenizer": {
+      "file": "whisper-tiny.en/tokenizer.json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny.en/resolve/main/tokenizer.json",
+      "bytes": 2405679
+    },
+    "whisperTokenizerConfig": {
+      "file": "whisper-tiny.en/tokenizer_config.json",
+      "url": "https://huggingface.co/onnx-community/whisper-tiny.en/resolve/main/tokenizer_config.json",
+      "bytes": 282662
     }
   }
 }

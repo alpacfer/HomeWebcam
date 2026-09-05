@@ -8,14 +8,18 @@
  *   npm run station -- probe .countdown__ring --ring
  *   npm run station -- perf --css ".tile{backdrop-filter:none!important}"
  *   npm run station -- puppet wave | point | victory | palm | both | stop
+ *   npm run station -- record 6 [--name "hand lost when backlit" --note "..."]
+ *   npm run station -- record save --name "..." | record discard
+ *   npm run station -- record 6 --task latest --step next --note "what happened"
  *   npm run station -- verify
+ *   npm run station -- say "stop"
  *   npm run station -- focus
  *
  * Everything attaches to the Chrome that ./start.sh already opened. Nothing
  * here ever launches a browser: /dev/video0 allows exactly one owner, and a
  * second one is how a debugging session turns into a broken station.
  */
-import { readdir, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { args, attach, sleep } from "./lib/cdp.mjs";
 
@@ -25,7 +29,33 @@ const NAMED_REGIONS = {
   countdown: { selector: ".countdown__dial", pad: 60 },
   status: { selector: "#capture-status", pad: 34 },
   hud: { selector: "#hud", pad: 12 },
+  recorder: { selector: "#recorder", pad: 16 },
+  tasks: { selector: "#tasks", pad: 16 },
+  dialog: { selector: "#recorder-dialog", pad: 16 },
 };
+
+/**
+ * Module constants live up here, above the top-level await that runs the
+ * command. Function declarations below it are hoisted; a `const` below it is
+ * still in its temporal dead zone when the command runs, and reading one throws
+ * "cannot access before initialization" from inside whichever check touched it.
+ */
+
+/** The name `verify` gives its own take, so the cleanup can recognise it. */
+const VERIFY_RECORDING_NAME = "verify debug recorder";
+
+/** The task `verify` writes for itself, and removes again. */
+const VERIFY_TASK = {
+  id: "verify-task-flow",
+  title: "verify task flow",
+  description: "Written and removed by npm run verify.",
+  createdAt: new Date().toISOString(),
+  status: "open",
+  steps: [{ id: "s1", instruction: "Hold a hand up for a second.", runs: [] }],
+};
+
+/** What the browser computed for the recorder, not what the app believes. */
+const RECORDER_DISPLAY = "getComputedStyle(document.getElementById('recorder')).display";
 
 const parsed = args();
 const [command = "state", ...rest] = parsed.positional;
@@ -37,6 +67,8 @@ const commands = {
   probe: cmdProbe,
   perf: cmdPerf,
   puppet: cmdPuppet,
+  record: cmdRecord,
+  say: cmdSay,
   verify: cmdVerify,
   focus: cmdFocus,
 };
@@ -226,6 +258,171 @@ async function cmdPuppet(cdp, [name = "stop"]) {
   printState(await cdp.snapshot());
 }
 
+/**
+ * Puts words in the station's ear without a microphone.
+ *
+ * They arrive marked `injected`, in the snapshot and in any recording's trace,
+ * because a check that passes this way says the wiring works and says nothing
+ * whatever about whether the speech model can hear. Same rule as the puppet's.
+ * See ADR 0011 and ADR 0016.
+ */
+async function cmdSay(cdp, words) {
+  const text = words.join(" ");
+  if (text === "") throw new Error('say needs something to say: station say "stop"');
+  // As JSON data, never interpolated as code. See docs/frictions/0010.
+  await cdp.evaluate(`window.__station.say(${JSON.stringify(text)})`);
+  console.log(`[say] "${text}" (injected, not heard)`);
+  await sleep(200);
+  printState(await cdp.snapshot());
+}
+
+/**
+ * Records a debug video without a mouse, which the corner control otherwise
+ * needs. The recorder lives in debug camera mode, so this switches the station
+ * there if it has to and puts it back afterwards: a mirror in a hallway should
+ * not be left showing the developer view because somebody took a recording.
+ *
+ * With --name it saves the take itself. Without one it stops and leaves the
+ * dialog standing, so the person who saw the bug is the one who describes it.
+ *
+ * The take is real camera footage of whoever was in front of the station. It is
+ * written to the gitignored recordings/ directory and nothing here deletes it.
+ */
+async function cmdRecord(cdp, [first, ...rest]) {
+  if (first === "save" || first === "discard") return cmdRecordFinish(cdp, first);
+  const rawSeconds = first ?? rest[0];
+  const config = await cdp.config();
+  const capMs = config.recording.maxMs;
+  const seconds = Math.min(Number(rawSeconds ?? parsed.number("seconds", 5)), capMs / 1000);
+  const name = parsed.get("name", null);
+  const note = parsed.get("note", null);
+  const wantedTask = parsed.get("task", null);
+
+  const before = await cdp.snapshot();
+  const restore = before.camera.mode;
+  if (restore !== "debug") {
+    await cdp.keys(["d"]);
+    await cdp.waitFor("document.body.dataset.cameraMode === 'debug'", {
+      timeoutMs: 20_000,
+      what: "the station to switch to debug mode",
+    });
+    await cdp.waitFor("document.body.classList.contains('is-live')", { timeoutMs: 20_000 });
+    console.log("[record] switched the station to debug mode; it will go back afterwards");
+  }
+
+  if (typeof wantedTask === "string") {
+    // Through the panel, not around it: the step's own button is what a person
+    // presses, so it is what this presses.
+    await cdp.evaluate("window.__station.tasks.refresh()");
+    const step = await pickStep(cdp, wantedTask, parsed.get("step", "next"));
+    await cdp.evaluate(
+      `window.__station.tasks.record(${JSON.stringify(step.taskId)}, ${JSON.stringify(step.stepId)})`,
+    );
+    console.log(`[record] answering ${step.taskId} ${step.stepId}`);
+  } else {
+    await cdp.evaluate("window.__station.recorder.start()");
+  }
+  await cdp.waitFor("window.__station.snapshot().recording.phase === 'recording'", {
+    timeoutMs: 5000,
+    what: "the recorder to start",
+  });
+  console.log(`[record] recording ${seconds} s of what the models are being given`);
+  await sleep(seconds * 1000);
+
+  await cdp.evaluate("window.__station.recorder.stop()");
+  await cdp.waitFor("window.__station.snapshot().recording.phase === 'naming'", {
+    timeoutMs: 15_000,
+    what: "the take to finish encoding",
+  });
+  const shot = await cdp.snapshot();
+  console.log(
+    `[record] ${shot.recording.samples} perception frames · ` +
+      `camera ${shot.camera.source} · ${shot.perceptionSource} hands`,
+  );
+
+  // A take answering a step already has its name; only the note is left to say.
+  // Without the words it needs, the dialog is left standing for whoever is at
+  // the station, which is the normal way round when a person did the step.
+  const words = typeof wantedTask === "string" ? note : name;
+  if (typeof words !== "string") {
+    const missing = typeof wantedTask === "string" ? "--note" : "--name";
+    console.log(`[record] the dialog at the station is waiting; pass ${missing} to save from here`);
+    return; // Leaving the mode alone: the dialog is on the debug view.
+  }
+
+  // As JSON data, never interpolated as code. See docs/frictions/0010.
+  const filename = await cdp.evaluate(
+    `window.__station.recorder.save(${JSON.stringify(name ?? "")}, ${JSON.stringify(note ?? "")})`,
+  );
+  console.log(`[record] recordings/${filename}`);
+  console.log(`[record] recordings/${String(filename).replace(/\.webm$/, ".json")}`);
+  if (typeof wantedTask === "string") {
+    console.log("[record] filed against the step; read it with npm run task -- show");
+  }
+
+  if (restore !== "debug") await returnTo(cdp, restore);
+}
+
+async function returnTo(cdp, mode) {
+  await cdp.keys([mode === "debug" ? "d" : "f"]);
+  await cdp.waitFor(`document.body.dataset.cameraMode === ${JSON.stringify(mode)}`, {
+    timeoutMs: 20_000,
+    what: "the station to go back to the mode it was in",
+  });
+}
+
+/** Resolves `--task latest|<fragment>` and `--step next|<id>` off the snapshot. */
+async function pickStep(cdp, wanted, wantedStep) {
+  const { tasks } = await cdp.snapshot();
+  const open = tasks.showing.filter((task) => task.status !== "dismissed");
+  if (open.length === 0) throw new Error("the station is showing no tasks");
+  const task =
+    wanted === "latest" || wanted === true
+      ? open.at(-1)
+      : open.find((candidate) => candidate.id.includes(String(wanted)));
+  if (task === undefined) throw new Error(`no task on the mirror matches "${wanted}"`);
+
+  const step =
+    wantedStep === "next" || wantedStep === true
+      ? (task.steps.find((candidate) => !candidate.answered) ?? task.steps[0])
+      : task.steps.find((candidate) => candidate.id === wantedStep);
+  if (step === undefined) throw new Error(`task ${task.id} has no step "${wantedStep}"`);
+  return { taskId: task.id, stepId: step.id };
+}
+
+/**
+ * Names or bins the take that is already waiting at the station, for whoever
+ * stopped the recording at the glass and would rather type at a keyboard than
+ * into a dialog on a wall.
+ */
+async function cmdRecordFinish(cdp, action) {
+  const state = (await cdp.snapshot()).recording;
+  if (state.phase !== "naming") {
+    throw new Error(`nothing is waiting to be saved; the recorder is ${state.phase}`);
+  }
+  if (action === "discard") {
+    await cdp.evaluate("window.__station.recorder.discard()");
+    console.log("[record] discarded");
+    return;
+  }
+  // A take that answers a step is named after the step, so only the note is
+  // missing; an untasked one still needs a name from somewhere.
+  const name = parsed.get("name", null);
+  if (state.task === null && typeof name !== "string") {
+    throw new Error("record save needs --name");
+  }
+  const note = String(parsed.get("note", ""));
+  // As JSON data, never interpolated as code. See docs/frictions/0010.
+  const filename = await cdp.evaluate(
+    `window.__station.recorder.save(${JSON.stringify(name ?? "")}, ${JSON.stringify(note)})`,
+  );
+  console.log(`[record] recordings/${filename}`);
+  console.log(`[record] recordings/${String(filename).replace(/\.webm$/, ".json")}`);
+  if (state.task !== null) {
+    console.log(`[record] filed against ${state.task.taskId} ${state.task.stepId}`);
+  }
+}
+
 // ------------------------------------------------------------- the harness --
 
 /**
@@ -237,8 +434,26 @@ async function cmdPuppet(cdp, [name = "stop"]) {
  * the hands are ours. Camera claims need a camera. See ADR 0011.
  */
 async function cmdVerify(cdp) {
+  // A covered window processes no frames, so every check below would fail for a
+  // reason that has nothing to do with the code. Say so once instead of
+  // nineteen times. See friction 0022.
+  await cdp.send("Page.bringToFront");
+  await sleep(600);
+  const before = await cdp.snapshot();
+  if (stalledWarning(before) !== "") {
+    console.error(
+      `[verify] ${stalledWarning(before)
+        .trim()
+        .replace(/\[state\]\s*/g, "\n  ")}`,
+    );
+    console.error("[verify] refusing to run: nothing here would mean anything.");
+    process.exitCode = 1;
+    return;
+  }
+
   const outDir = String(parsed.get("out", "captures/verify"));
-  const before = await pictureFiles();
+  const picturesBefore = await pictureFiles();
+  const recordingsBefore = await recordingFiles();
   const config = await cdp.config();
   const results = [];
 
@@ -269,10 +484,25 @@ async function cmdVerify(cdp) {
   // puppet held the frame loop for the whole run and nothing else fired the
   // shutter. Removing exactly the delta is what friction 0008 asked for.
   const after = await pictureFiles();
-  const mine = after.filter((file) => !before.includes(file));
+  const mine = after.filter((file) => !picturesBefore.includes(file));
   for (const file of mine) await rm(join("captures", file));
   if (mine.length > 0)
     console.log(`\n[verify] removed ${mine.length} picture(s) taken by this run`);
+
+  // Same rule for the recorder check, and it matters more: a debug recording is
+  // seconds of video of whoever was standing there. See docs/frictions/0008.
+  const myPrefixes = [slugify(VERIFY_RECORDING_NAME), slugify(VERIFY_TASK.title)];
+  const myRecordings = (await recordingFiles()).filter(
+    (f) => !recordingsBefore.includes(f) && myPrefixes.some((prefix) => f.startsWith(prefix)),
+  );
+  for (const file of myRecordings) await rm(join("recordings", file));
+  if (myRecordings.length > 0)
+    console.log(`[verify] removed ${myRecordings.length} recording file(s) taken by this run`);
+
+  // The task it wrote for itself goes too. A task nobody asked for, left on the
+  // mirror, is the debug view lying about what is outstanding.
+  await rm(join("tasks", `${VERIFY_TASK.id}.json`), { force: true });
+  await cdp.evaluate("window.__station.tasks.refresh()").catch(() => undefined);
 
   const failed = results.filter((r) => !r.ok);
   console.log(
@@ -478,6 +708,190 @@ function checks(config) {
         };
       },
     },
+    {
+      name: "the-recorder-is-debug-only",
+      crop: "menu",
+      async run(cdp) {
+        await cdp.evaluate("window.__station.puppet.stop()");
+        await cdp.reload();
+        const hidden = await cdp.snapshot();
+        await cdp.keys(["d"]);
+        await cdp.waitFor("document.body.dataset.cameraMode === 'debug'", {
+          timeoutMs: 20_000,
+          what: "debug mode",
+        });
+        await cdp.waitFor("document.body.classList.contains('is-live')", { timeoutMs: 20_000 });
+        const shown = await cdp.snapshot();
+        const debugDisplay = await cdp.evaluate(RECORDER_DISPLAY);
+        // The pointer comes with it: the control is the only thing on this
+        // station that has to be pressed rather than pointed at.
+        const cursor = await cdp.evaluate("getComputedStyle(document.body).cursor");
+        await cdp.keys(["f"]);
+        await cdp.waitFor("document.body.dataset.cameraMode === 'final'", { timeoutMs: 20_000 });
+        // Computed style, not the flag that claims it: the class that hides
+        // this lost the cascade to an id selector once, and the snapshot went
+        // on saying "hidden" while the control sat on the visitor's mirror.
+        const finalDisplay = await cdp.evaluate(RECORDER_DISPLAY);
+        await cdp.keys(["d"]);
+        await cdp.waitFor("document.body.dataset.cameraMode === 'debug'", { timeoutMs: 20_000 });
+        return {
+          ok:
+            !hidden.recording.visible &&
+            shown.recording.visible &&
+            finalDisplay === "none" &&
+            debugDisplay !== "none" &&
+            cursor !== "none",
+          detail: `final display ${finalDisplay} · debug display ${debugDisplay} · cursor ${cursor}`,
+        };
+      },
+    },
+    {
+      name: "a-task-reaches-the-mirror",
+      crop: "tasks",
+      async run(cdp) {
+        await mkdir("tasks", { recursive: true });
+        await writeFile(
+          join("tasks", `${VERIFY_TASK.id}.json`),
+          `${JSON.stringify(VERIFY_TASK, null, 2)}\n`,
+        );
+        await cdp.evaluate("window.__station.tasks.refresh()");
+        await cdp.waitFor(
+          `window.__station.snapshot().tasks.showing.some((t) => t.id === ${JSON.stringify(VERIFY_TASK.id)})`,
+          { timeoutMs: 5000, what: "the task to appear on the mirror" },
+        );
+        const shown = await cdp.evaluate(
+          `document.querySelector('[data-task=${JSON.stringify(VERIFY_TASK.id)}] .task__instruction')?.textContent ?? ''`,
+        );
+        return {
+          ok: shown === VERIFY_TASK.steps[0].instruction,
+          detail: `step reads ${JSON.stringify(shown)}`,
+        };
+      },
+    },
+    {
+      name: "a-step-records-and-files-itself",
+      crop: "tasks",
+      async run(cdp) {
+        // Through the step's own button, which is what a finger presses.
+        await cdp.evaluate(
+          `window.__station.tasks.record(${JSON.stringify(VERIFY_TASK.id)}, "s1")`,
+        );
+        await cdp.waitFor("window.__station.snapshot().recording.phase === 'recording'", {
+          timeoutMs: 5000,
+          what: "the step to start recording",
+        });
+        const running = await cdp.snapshot();
+        await sleep(1200);
+        await cdp.evaluate("window.__station.recorder.stop()");
+        await cdp.waitFor("window.__station.snapshot().recording.phase === 'naming'", {
+          timeoutMs: 15_000,
+          what: "the take to finish encoding",
+        });
+        await cdp.evaluate('window.__station.recorder.save("", "Written by npm run verify.")');
+        await cdp.waitFor("window.__station.snapshot().recording.phase === 'saved'", {
+          timeoutMs: 15_000,
+          what: "the take to be filed",
+        });
+
+        const task = JSON.parse(await readFile(join("tasks", `${VERIFY_TASK.id}.json`), "utf8"));
+        const run = task.steps[0].runs[0];
+        // The puppet is stopped by the check before this one, so this take is a
+        // camera take - and the run has to say which it was either way.
+        return {
+          ok:
+            run !== undefined &&
+            task.status === "done" &&
+            typeof run.recording === "string" &&
+            run.note === "Written by npm run verify." &&
+            ["camera", "puppet"].includes(run.perceptionSource) &&
+            run.digest?.frames > 0,
+          detail:
+            run === undefined
+              ? `nothing was filed (task is ${task.status})`
+              : `${run.perceptionSource} · ${run.digest?.frames} frames · task ${task.status} · ` +
+                `answering ${running.recording.task?.stepId}`,
+        };
+      },
+    },
+    {
+      name: "a-word-stops-a-recording",
+      crop: "recorder",
+      async run(cdp) {
+        await cdp.evaluate("window.__station.recorder.start()");
+        await cdp.waitFor("window.__station.snapshot().recording.phase === 'recording'", {
+          timeoutMs: 5000,
+          what: "the recorder to start",
+        });
+        await sleep(600);
+        // Injected, not spoken: this proves the wiring from an utterance to the
+        // recorder and says nothing at all about the speech model. See ADR 0016.
+        await cdp.evaluate('window.__station.say("stop")');
+        await cdp.waitFor("window.__station.snapshot().recording.phase === 'naming'", {
+          timeoutMs: 8000,
+          what: "a spoken stop to end the take",
+        });
+        const state = await cdp.snapshot();
+        return {
+          ok: state.voice.lastSource === "injected",
+          detail: `stopped by an injected word · ear ${state.voice.listening ? "open" : "closed"}`,
+        };
+      },
+    },
+    {
+      name: "a-description-is-dictated",
+      crop: "dialog",
+      async run(cdp) {
+        const spoken = "It lost my hand when I turned toward the window.";
+        await cdp.evaluate(`window.__station.say(${JSON.stringify(spoken)})`);
+        await cdp.waitFor(
+          `document.getElementById("recorder-description").value.includes("turned toward")`,
+          { timeoutMs: 8000, what: "the words to reach the description" },
+        );
+        const written = await cdp.evaluate('document.getElementById("recorder-description").value');
+        // Straight into the description, never the name: the dialog focuses the
+        // name for typing, and a spoken sentence is not a filename.
+        const name = await cdp.evaluate('document.getElementById("recorder-name").value');
+        await cdp.evaluate("window.__station.recorder.discard()");
+        return {
+          ok: written === spoken && name === "",
+          detail: `${JSON.stringify(String(written).slice(0, 40))} · name left ${JSON.stringify(name)}`,
+        };
+      },
+    },
+    {
+      name: "a-recording-is-saved-with-a-name",
+      crop: "recorder",
+      async run(cdp) {
+        await cdp.evaluate("window.__station.recorder.start()");
+        await cdp.waitFor("window.__station.snapshot().recording.phase === 'recording'", {
+          timeoutMs: 5000,
+          what: "the recorder to start",
+        });
+        await sleep(1200);
+        const running = await cdp.snapshot();
+        await cdp.evaluate("window.__station.recorder.stop()");
+        await cdp.waitFor("window.__station.snapshot().recording.phase === 'naming'", {
+          timeoutMs: 15_000,
+          what: "the take to finish encoding",
+        });
+
+        const filename = await cdp.evaluate(
+          `window.__station.recorder.save(${JSON.stringify(VERIFY_RECORDING_NAME)},` +
+            ` "Written and removed by npm run verify.")`,
+        );
+        const files = await recordingFiles();
+        const stem = String(filename).replace(/\.webm$/, "");
+        // Back to what a visitor sees, whatever happens next.
+        await cdp.keys(["f"]);
+        return {
+          ok:
+            running.recording.samples > 0 &&
+            files.includes(`${stem}.webm`) &&
+            files.includes(`${stem}.json`),
+          detail: `${filename} · ${running.recording.samples} perception frames while recording`,
+        };
+      },
+    },
   ];
 }
 
@@ -666,6 +1080,19 @@ async function pictureFiles() {
   }
 }
 
+/** The server slugifies a recording's name the same way. See vite.config.ts. */
+function slugify(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+async function recordingFiles() {
+  try {
+    return await readdir("recordings");
+  } catch {
+    return [];
+  }
+}
+
 function printState(s) {
   const badge = s.perceptionSource === "puppet" ? "  ⚠ PUPPET HANDS" : "";
   console.log(
@@ -674,7 +1101,10 @@ function printState(s) {
   // friction 0011 claimed this warning was here and it was not, so a whole
   // session's numbers were read without knowing the window was unfocused.
   if (throttleWarning(s) !== "") console.log(`[state]${throttleWarning(s)}`);
+  if (stalledWarning(s) !== "") console.log(`[state]${stalledWarning(s)}`);
   if (deliveryWarning(s) !== "") console.log(`[state]${deliveryWarning(s)}`);
+  if (s.camera.error != null) console.log(`[state]  ⚠ last mode change failed - ${s.camera.error}`);
+  if (s.crash != null) console.log(`[state]  ⚠ something threw - ${s.crash}`);
   console.log(
     `[state] hands ${s.hands.length}${s.hands.length > 0 ? ` (${s.hands.map((h) => `${h.side}:${h.gesture}@${h.confidence.toFixed(2)}`).join(", ")})` : ""} · faces ${s.faces} · detectors hands ${s.camera.timings.hands.toFixed(1)}ms faces ${s.camera.timings.faces.toFixed(1)}ms`,
   );
@@ -688,6 +1118,44 @@ function printState(s) {
     console.log(
       `[state]   ${panel.id.padEnd(8)} offset ${panel.offset.x.toFixed(1)},${panel.offset.y.toFixed(1)} px · lean ${panel.leanDeg.y.toFixed(1)}° · glow ${panel.glow.toFixed(2)} · dwell ${panel.dwell.toFixed(2)}${panel.hold === null ? "" : ` · hold ${panel.hold.toFixed(2)}`}`,
     );
+  }
+  if (s.recording.visible || s.recording.phase !== "idle") {
+    const r = s.recording;
+    console.log(
+      `[state] recorder ${r.phase}` +
+        (r.phase === "recording"
+          ? ` · ${(r.elapsedMs / 1000).toFixed(1)} s · ${r.samples} frames`
+          : "") +
+        (r.lastSaved === null ? "" : ` · saved ${r.lastSaved}`) +
+        (r.error === null ? "" : ` · ⚠ ${r.error}`),
+    );
+  }
+  if (s.voice.listening || s.voice.error !== null) {
+    const v = s.voice;
+    console.log(
+      `[state] ear ${v.error !== null ? `⚠ ${v.error}` : v.ready ? "ready" : "loading the model"}` +
+        ` · ${v.device} · level ${(v.level * 100).toFixed(0)}%` +
+        (v.speaking ? " · hearing someone" : "") +
+        (v.pending > 0 ? ` · ${v.pending} to transcribe` : "") +
+        (v.lastText === ""
+          ? ""
+          : ` · ${v.lastSource === "injected" ? "⚠ INJECTED" : "heard"} "${v.lastText.trim()}"` +
+            (v.lastSource === "injected" ? "" : ` in ${v.lastTookMs} ms`)),
+    );
+  }
+  if (s.tasks.visible || s.tasks.showing.length > 0) {
+    const t = s.tasks;
+    console.log(
+      `[state] tasks ${t.showing.length} on the mirror, ${t.open} open` +
+        (t.recordingFor === null
+          ? ""
+          : ` · recording ${t.recordingFor.taskId} ${t.recordingFor.stepId}`) +
+        (t.error === null ? "" : ` · ⚠ ${t.error}`),
+    );
+    for (const task of t.showing) {
+      const steps = task.steps.map((step) => `${step.id}${step.answered ? "✓" : ""}`).join(" ");
+      console.log(`[state]   ${task.status.padEnd(9)} ${task.title} · ${steps}`);
+    }
   }
   if (s.picture.countdownVisible || s.picture.statusVisible) {
     console.log(
@@ -703,6 +1171,31 @@ function printState(s) {
 function throttleWarning(snapshot) {
   if (snapshot.visibility.state === "visible" && snapshot.visibility.focused) return "";
   return `  ⚠ window ${snapshot.visibility.state}${snapshot.visibility.focused ? "" : ", unfocused"} - frame rate is throttled`;
+}
+
+/**
+ * A loop that is not being handed frames at all.
+ *
+ * Chrome stops compositing a window it considers covered, and
+ * requestVideoFrameCallback stops with it - while the video element keeps
+ * playing, `visibilityState` stays "visible" and `hasFocus()` stays true, so
+ * nothing else in this readout notices. Every rate then holds the value it had
+ * when the last frame arrived, which reads as a slow station rather than a
+ * stopped one. See friction 0022.
+ */
+function stalledWarning(snapshot) {
+  const since = snapshot.camera.sinceLastFrameMs;
+  if (since === undefined || !snapshot.live) return "";
+  const how =
+    since < 0
+      ? "has not processed a single frame"
+      : `has processed nothing for ${(since / 1000).toFixed(1)} s`;
+  if (since >= 0 && since < 1000) return "";
+  return (
+    `  ⚠ the loop ${how} - every rate below is stale.\n` +
+    "[state]    Uncover the station window: Chrome stops painting one it thinks is hidden,\n" +
+    "[state]    and requestVideoFrameCallback stops with it while the video keeps playing."
+  );
 }
 
 /** The camera reports the rate it negotiated, not the rate it sends. */

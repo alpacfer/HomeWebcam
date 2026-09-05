@@ -1,14 +1,34 @@
 import { CONFIG } from "../config.js";
 import type { CursorState } from "../interaction/cursor.js";
 import { GestureHold } from "../interaction/gesture-hold.js";
-import { MenuPhysics, type PanelLayout } from "../interaction/menu-physics.js";
+import { type MenuMotion, MenuPhysics, type PanelLayout } from "../interaction/menu-physics.js";
 import { requireElement } from "../lib/assert.js";
-import type { GestureName, PerceptionFrame } from "../perception/types.js";
+import type { GestureName, PerceptionFrame, Rect } from "../perception/types.js";
 import { ensureLens } from "./glass.js";
 import { ICON } from "./icons.js";
 
 type ExperienceMode = "home" | "picture";
 type PicturePhase = "idle" | "countdown" | "saving" | "saved" | "error";
+
+/**
+ * Where the interface is on one frame, for whoever is recording it.
+ *
+ * It lives here rather than in src/debug/ because it is this file's state being
+ * described, and nothing outside src/debug/ may depend on src/debug/. The
+ * rectangles are the live ones the hit test uses, travel included: a trace that
+ * said where the finger was and not where the tile had been shoved cannot
+ * answer "I pointed at it and nothing happened". See src/debug/trace.ts.
+ */
+export interface SceneSample {
+  mode: string;
+  phase: string;
+  menu: {
+    hovered: string | null;
+    panels: Array<{ id: string; rect: Rect; glow: number }>;
+  };
+}
+
+const NOWHERE: Rect = { x: 0, y: 0, width: 0, height: 0 };
 
 interface ModeSpec {
   readonly id: string;
@@ -61,6 +81,8 @@ export class ExperienceUi {
 
   private mode: ExperienceMode = "home";
   private phase: PicturePhase = "idle";
+  /** The last frame of physics, kept only so the recorder can read it back. */
+  private lastMotion: MenuMotion | null = null;
   private countdownEndsAt: number | null = null;
   private resetMessageAt: number | null = null;
 
@@ -108,11 +130,30 @@ export class ExperienceUi {
 
     const aspect = window.innerWidth / window.innerHeight;
     const motion = this.physics.update(frame, cursor, aspect);
+    this.lastMotion = motion;
     this.render(motion, this.mode === "home" ? victory.progress : palm.progress);
     if (motion.activated !== null) this.select(motion.activated);
 
     this.advancePicture(frame.t);
     return { ...cursor, dwellProgress: motion.dwell, activated: motion.activated !== null };
+  }
+
+  /** Where the interface is right now. Read by the debug recorder's trace. */
+  scene(): SceneSample {
+    const motion = this.lastMotion;
+    const hovered = motion?.hovered ?? null;
+    return {
+      mode: this.mode,
+      phase: this.phase,
+      menu: {
+        hovered: hovered === null ? null : (this.tiles[hovered]?.spec.id ?? null),
+        panels: this.tiles.map((tile, index) => ({
+          id: tile.spec.id,
+          rect: motion?.panels[index]?.rect ?? NOWHERE,
+          glow: motion?.panels[index]?.glow ?? 0,
+        })),
+      },
+    };
   }
 
   enterPicture(): void {

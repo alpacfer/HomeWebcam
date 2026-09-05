@@ -181,6 +181,114 @@ export const CONFIG = {
     savedMessageMs: 2600,
   },
 
+  /**
+   * The debug recorder: what the models were actually given, kept for a bug
+   * report. Available in debug camera mode only. See ADR 0014.
+   */
+  recording: {
+    /**
+     * Hard cap on one take. Long enough to hold a gesture that only fails
+     * sometimes, short enough that a recorder left running by mistake costs a
+     * bounded amount of disk and of encoder time.
+     */
+    maxMs: 30_000,
+    /**
+     * Generous for 1280x720 on purpose. Hand landmarks fail on exactly what a
+     * low bitrate destroys - motion blur and blocking around fast fingers - so
+     * a stingy recording would misrepresent the input it exists to preserve.
+     * 30 s at this rate is about 30 MB.
+     */
+    videoBitsPerSecond: 8_000_000,
+    /**
+     * First supported wins. VP8 before VP9 because it is the cheaper encode and
+     * this runs beside two MediaPipe passes on the same machine; measure the
+     * loop with `npm run station -- watch ".camera.fps"` before changing it.
+     */
+    mimeTypes: ["video/webm;codecs=vp8", "video/webm;codecs=vp9", "video/webm"],
+    /** How often the loop's frame rate is sampled into the manifest, in ms. */
+    healthSampleMs: 100,
+  },
+
+  /**
+   * The ear. Whisper tiny.en on the camera's own microphone, entirely
+   * on-device, listening for a stretch of speech and transcribing it.
+   * See ADR 0016. Every number here wants verifying at the station.
+   */
+  voice: {
+    enabled: true,
+    /** Whisper is trained at 16 kHz; anything else is resampled to it anyway. */
+    sampleRate: 16_000,
+    /** Under public/models/. Downloaded by npm run models. */
+    model: "whisper-tiny.en",
+    /**
+     * Which microphone. The C922's own is above the screen and pointed at
+     * whoever is standing in front of it; the machine's built-in one is pointed
+     * at the machine. Matched against the device label, case-insensitively.
+     */
+    deviceLabel: "c922|webcam",
+    /**
+     * RMS above which a block counts as speech. The C922's floor in this room
+     * measured a median of 0.00 and a peak of 0.10 over eight quiet seconds,
+     * so 0.02 sent chair scrapes to the model and got words back. 0.04 sits
+     * above the room and below a voice at two metres. Watch `station state`
+     * while talking, and verify at the station.
+     */
+    activationLevel: 0.04,
+    /** Quiet for this long ends an utterance. Below ~400 ms it cuts words in half. */
+    silenceMs: 600,
+    /** Anything shorter than this is a cough, a door, or a chair. */
+    minUtteranceMs: 250,
+    /** A hard stop, so one long noise cannot grow an unbounded buffer. */
+    maxUtteranceMs: 12_000,
+    /** Silence kept in front of a word, so its first consonant survives. */
+    leadMs: 300,
+    /**
+     * The whole vocabulary. Whole words, lower case, matched against a
+     * transcript with its punctuation stripped.
+     *
+     * One command on purpose. Every word added here is a word somebody can say
+     * by accident while describing a bug, and the model will hear it. See
+     * src/interaction/voice-commands.ts.
+     */
+    commands: {
+      stop: ["stop"],
+    },
+    /**
+     * What Whisper says when it is given sound with no speech in it.
+     *
+     * It is a transcription model, not a detector: handed a door closing it
+     * answers with the most likely sentence, and on this material that is
+     * almost always one of these. They are dropped only when they are the
+     * *entire* utterance, so "thank you" said in the middle of a sentence
+     * survives. Add to it from what `station state` shows in a quiet room.
+     */
+    hallucinations: [
+      "you",
+      "thank you",
+      "thanks for watching",
+      "bye",
+      "so",
+      "oh",
+      "yeah",
+      "mm-hmm",
+      "hmm",
+    ],
+  },
+
+  /**
+   * Tasks the person at the station is asked to perform in front of the camera.
+   * Written from a keyboard, answered with a recording. See ADR 0015.
+   */
+  tasks: {
+    /**
+     * How often the debug view asks the server for the list. A task is written
+     * minutes before anyone walks up to the station, so this only has to be
+     * faster than a person crossing a hallway. Debug mode only: a mirror
+     * showing the visitor interface asks for nothing.
+     */
+    pollMs: 3000,
+  },
+
   ui: {
     /** Visitors start in the clean, high-detail presentation. D/F switch modes. */
     defaultCameraMode: "final" as const,

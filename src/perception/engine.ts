@@ -10,7 +10,9 @@ import type {
   HandObservation,
   IdentityDetector,
   PerceptionFrame,
+  Utterance,
 } from "./types.js";
+import { VoiceEar, type VoiceStatus } from "./voice.js";
 
 /** Smoothed per-detector cost in ms. The frame budget at 60 fps is 16.7 ms. */
 export interface DetectorTimings {
@@ -40,6 +42,12 @@ export class PerceptionEngine {
     ? new FaceFeaturesDetector()
     : new FacesDetector();
   private readonly identity: IdentityDetector = new NoopIdentityDetector();
+  /**
+   * The ear. Not a Detector: it does not run per camera frame and it never
+   * touches MediaPipe, so it has none of the timestamp rules. It listens on its
+   * own thread and this drains what it heard into each frame. See ADR 0016.
+   */
+  private readonly ear = new VoiceEar();
 
   private seq = 0;
   private lastTimestamp = -1;
@@ -54,6 +62,16 @@ export class PerceptionEngine {
     await this.hands.init();
     await this.faces.init();
     await this.identity.init();
+  }
+
+  /**
+   * Opens or closes the microphone. The app calls this with the camera mode:
+   * the station listens in debug mode and not in front of a visitor. The model
+   * loads on the first call and stays loaded. See ADR 0016.
+   */
+  listen(on: boolean): void {
+    if (on) void this.ear.listen();
+    else this.ear.deafen();
   }
 
   /**
@@ -82,7 +100,13 @@ export class PerceptionEngine {
       }
     }
 
-    return { seq: this.seq, t: performance.now(), hands: this.lastHands, faces: this.lastFaces };
+    return {
+      seq: this.seq,
+      t: performance.now(),
+      hands: this.lastHands,
+      faces: this.lastFaces,
+      heard: this.hear(),
+    };
   }
 
   /**
@@ -95,10 +119,30 @@ export class PerceptionEngine {
     return { ...this.timings };
   }
 
+  /** What the ear is doing: the HUD and the station snapshot both show it. */
+  get voice(): VoiceStatus {
+    return this.ear.state;
+  }
+
+  /**
+   * Everything heard since the last call. `step` folds this into the frame it
+   * builds; the app drains it separately while a puppet is driving, because a
+   * puppet replaces the hands and has nothing to say about the ear.
+   */
+  hear(): Utterance[] {
+    return this.ear.drain();
+  }
+
+  /** Tells the station it heard something. See VoiceEar.inject. */
+  say(text: string): void {
+    this.ear.inject(text);
+  }
+
   close(): void {
     this.hands.close();
     this.faces.close();
     this.identity.close();
+    this.ear.close();
   }
 
   private due(everyNFrames: number): boolean {

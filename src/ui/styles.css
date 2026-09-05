@@ -35,6 +35,18 @@
   box-sizing: border-box;
 }
 
+/*
+ * The hidden attribute wins, whatever else in here sets a display.
+ *
+ * The UA rule behind `hidden` is `display: none` at the weakest possible
+ * specificity, so any class in this file that sets a display outranks it and
+ * the element stays on screen with nothing to explain why. That has now
+ * happened twice - see friction 0019 - and this is the rule that ends it.
+ */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -509,6 +521,453 @@ body[data-perception-source="puppet"]::after {
   pointer-events: none;
 }
 
+/* ------------------------------------------------------ the debug recorder */
+
+/*
+ * Debug mode is the only mode with a mouse pointer, because it is the only mode
+ * with something to press. A visitor drives this mirror with their hands and
+ * must never find a cursor parked in the corner of their reflection.
+ */
+body[data-camera-mode="debug"] {
+  cursor: default;
+}
+
+/*
+ * The recorder wears the HUD's clothes, not the visitor's glass: it is an
+ * instrument, and an instrument that looked like the interface would end up in
+ * a screenshot meant to show the interface.
+ */
+#recorder {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 4;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 18px 8px 8px;
+  color: var(--ink-dim);
+  font-size: 12px;
+  background: var(--scrim);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+}
+
+/* Qualified by the id, because the block that shows it is an id selector and
+   would otherwise win the cascade and leave the control on a visitor's mirror. */
+#recorder.recorder--hidden {
+  display: none;
+}
+
+.recorder__toggle {
+  position: relative;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.recorder__toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* The cap on a take, drawn with the one ring this interface has. */
+.recorder__ring {
+  --ring-inset: -5px;
+  --ring-radius: 50%;
+  --ring-width: 2px;
+}
+
+/* Round is record, square is stop. Fifty years of tape decks did the teaching. */
+.recorder__dot {
+  width: 14px;
+  height: 14px;
+  background: var(--danger);
+  border-radius: 50%;
+  transition:
+    width 160ms ease,
+    height 160ms ease,
+    border-radius 160ms ease;
+}
+
+#recorder[data-phase="recording"] .recorder__dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  animation: recorder-pulse 1600ms ease-in-out infinite;
+}
+
+#recorder[data-phase="recording"] {
+  color: var(--ink);
+  border-color: rgba(255, 138, 128, 0.5);
+}
+
+#recorder[data-phase="error"] {
+  color: var(--danger);
+  border-color: rgba(255, 138, 128, 0.35);
+}
+
+@keyframes recorder-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.recorder__readout {
+  min-width: 11ch;
+  /* A saved filename is 45 characters and this sits over the mirror. The whole
+     name is on the element's title, which debug mode has a pointer to reach. */
+  max-width: 24ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------- the tasks */
+
+/*
+ * Hung under the recorder, in the same instrument clothes. It is a list of
+ * things to go and do in front of the camera, so it has to be readable from
+ * standing distance and small enough that the mirror is still a mirror.
+ */
+/*
+ * It does not scroll. A person is standing two metres away with their hands up;
+ * they cannot reach a scrollbar, and a task they cannot see is a task nobody
+ * does. Everything the panel holds is laid out at once, wrapped rather than
+ * clipped, and the list stays short because finished tasks leave it.
+ */
+#tasks {
+  position: fixed;
+  /* Clear of the recorder above it: that control is 52 px tall and sits at 24,
+     so this starts 20 px below where it ends. They are two instruments, not one
+     stack, and they should not look welded together. */
+  top: 96px;
+  right: 24px;
+  z-index: 4;
+  display: grid;
+  gap: 8px;
+  width: 360px;
+  padding: 14px 16px;
+  color: var(--ink-dim);
+  font-size: 12px;
+  background: var(--scrim);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  backdrop-filter: blur(8px);
+}
+
+/* Qualified by the id for the same reason the recorder's is. See friction 0019. */
+#tasks.tasks--hidden {
+  display: none;
+}
+
+.tasks__heading {
+  margin: 0;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.tasks__empty,
+.tasks__error {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.tasks__error {
+  color: var(--danger);
+}
+
+.tasks__list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.task {
+  display: grid;
+  gap: 6px;
+  /* Grid and flex items default to min-content width, so one long filename in a
+     run line pushes the whole panel sideways instead of being clipped. */
+  min-width: 0;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+
+.task__head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.task__title {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.task__dismiss {
+  flex: none;
+  padding: 0 4px;
+  color: var(--ink-dim);
+  font: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.task__description {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.task__steps {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The step is the button. Pressing it starts the take that answers it. */
+.task__record {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 9px;
+  grid-template-columns: 22px 1fr;
+  align-items: start;
+  padding: 8px 10px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.task__record:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.task__marker {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 50%;
+}
+
+.task__instruction {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.task__step {
+  min-width: 0;
+}
+
+.task__step[data-state="answered"] .task__marker {
+  color: rgb(6, 24, 20);
+  background: var(--accent);
+}
+
+.task__step[data-state="answered"] .task__instruction {
+  color: var(--ink-dim);
+}
+
+.task__step[data-state="recording"] .task__record {
+  border-color: rgba(255, 138, 128, 0.65);
+}
+
+.task__step[data-state="recording"] .task__marker {
+  color: rgb(24, 8, 6);
+  background: var(--danger);
+  animation: recorder-pulse 1600ms ease-in-out infinite;
+}
+
+/* The takes filed against this step, newest last. Wrapped, never truncated: a
+   filename you can only read half of is a filename you cannot open. */
+.task__run {
+  margin: 5px 0 0 31px;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* Where the take is. Quieter than what the person said about it. */
+.task__run--file {
+  margin-top: 1px;
+  color: var(--ink-dim);
+  font-size: 10px;
+}
+
+.task[data-status="done"] .task__title {
+  color: var(--ink-dim);
+}
+
+/* ----------------------------------------------------- naming what was shot */
+
+.recorder__dialog {
+  width: min(460px, calc(100vw - 48px));
+  padding: 0;
+  color: var(--ink);
+  background: rgba(10, 13, 18, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+
+.recorder__dialog::backdrop {
+  background: rgba(3, 5, 8, 0.6);
+}
+
+.recorder__form {
+  display: grid;
+  gap: 8px;
+  padding: 22px;
+}
+
+.recorder__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.recorder__summary {
+  margin: 0 0 6px;
+  color: var(--ink-dim);
+  font-size: 12px;
+}
+
+/* What the task asked for, so the person answering it can see it again while
+   they write down what happened. */
+.recorder__asked-for {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  background: rgba(151, 238, 218, 0.1);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+}
+
+.recorder__row {
+  display: grid;
+  gap: 8px;
+}
+
+.recorder__label {
+  color: var(--ink-dim);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.recorder__input {
+  padding: 9px 11px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  /* The body is a kiosk and forbids selection; a text field is the exception. */
+  user-select: text;
+}
+
+.recorder__input:focus-visible {
+  border-color: rgba(151, 238, 218, 0.7);
+  outline: none;
+}
+
+.recorder__input--multiline {
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.recorder__error {
+  margin: 2px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* The ear is open. It pulses while someone is actually talking. */
+.recorder__listening {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 2px 0 0;
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.recorder__listening::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+.recorder__listening[data-speaking="true"]::before {
+  animation: recorder-pulse 700ms ease-in-out infinite;
+}
+
+.recorder__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.recorder__button {
+  padding: 8px 16px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.recorder__button--primary {
+  color: rgb(6, 24, 20);
+  background: var(--accent);
+  border-color: transparent;
+  font-weight: 600;
+}
+
 /* ------------------------------------------------------------ boot and HUD */
 
 #boot {
@@ -602,5 +1061,10 @@ body.is-live #boot {
 
   .capture-flash--active {
     animation-duration: 1ms;
+  }
+
+  #recorder[data-phase="recording"] .recorder__dot,
+  .task__step[data-state="recording"] .task__marker {
+    animation: none;
   }
 }

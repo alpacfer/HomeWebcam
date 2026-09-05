@@ -18,9 +18,11 @@
     "postinstall": "node scripts/sync-wasm.mjs",
     "screenshot": "node scripts/screenshot.mjs",
     "station": "node scripts/station.mjs",
+    "task": "node scripts/tasks.mjs",
     "verify": "node scripts/station.mjs verify"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@mediapipe/tasks-vision": "^1.0.1",
     "@phosphor-icons/core": "^2.1.1"
   },

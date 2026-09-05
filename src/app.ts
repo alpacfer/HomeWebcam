@@ -8,11 +8,14 @@ import {
 import { CONFIG } from "./config.js";
 import { installDebugBridge, type LoopSnapshot } from "./debug/bridge.js";
 import { PuppetController } from "./debug/puppet.js";
+import { DebugRecorder, type RecordingDiagnostics, type RecordingTake } from "./debug/recorder.js";
+import { httpTaskStore, TaskPanel } from "./debug/tasks.js";
 import { type CursorState, HandCursor } from "./interaction/cursor.js";
+import { routeUtterance } from "./interaction/voice-commands.js";
 import { requireElement } from "./lib/assert.js";
 import { FpsMeter, SkippedFrames } from "./lib/fps.js";
 import { PerceptionEngine } from "./perception/engine.js";
-import type { PerceptionFrame } from "./perception/types.js";
+import type { PerceptionFrame, Utterance } from "./perception/types.js";
 import { ExperienceUi } from "./ui/experience.js";
 import { Hud } from "./ui/hud.js";
 import { fitCanvas, setupMirror } from "./ui/mirror.js";
@@ -37,6 +40,14 @@ export class App {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly hud: Hud;
   private readonly experience: ExperienceUi;
+  /**
+   * Records the frames the detectors are given, for a bug report. Not gated on
+   * DEV like the rest of src/debug/: it is reachable from debug camera mode in
+   * any build the station actually runs. See ADR 0014.
+   */
+  readonly recorder: DebugRecorder;
+  /** The list of things to go and do in front of the camera. See ADR 0015. */
+  readonly tasks: TaskPanel;
 
   private readonly engine = new PerceptionEngine();
   private readonly cursor = new HandCursor();
@@ -54,14 +65,44 @@ export class App {
   private modeChange: Promise<void> = Promise.resolve();
   private loopGeneration = 0;
   private lastHudAt = 0;
+  /** When a frame was last processed, for "is this loop alive" questions. */
+  private lastFrameAt = 0;
   private lastFrame: PerceptionFrame | null = null;
   private lastCursor: CursorState | null = null;
+  /**
+   * Why the last mode change did not happen. A failed switch falls back to the
+   * working profile and leaves a mirror that looks fine and ignored the key, so
+   * the reason has to end up somewhere a person can read it.
+   */
+  private lastCameraError: string | null = null;
+  /**
+   * The last thing that was thrown and not caught.
+   *
+   * An exception inside the frame callback ends the loop: nothing reschedules
+   * it, the picture freezes on its last frame, and every meter holds the value
+   * it had. From the outside that is indistinguishable from a slow camera,
+   * which is how an afternoon gets spent on the wrong thing.
+   */
+  private lastCrash: string | null = null;
 
   constructor(root: ParentNode = document) {
     this.video = requireElement(root, "#camera", HTMLVideoElement);
     this.canvas = requireElement(root, "#overlay", HTMLCanvasElement);
     this.hud = new Hud(requireElement(root, "#hud", HTMLElement));
     this.experience = new ExperienceUi(root, () => this.capturePicture());
+    this.recorder = new DebugRecorder(root, {
+      stream: () => this.stream,
+      diagnostics: () => this.recordingDiagnostics(),
+      scene: () => this.experience.scene(),
+      save: (take) => this.saveRecording(take),
+    });
+    // The panel drives the recorder and the recorder files what it produced, so
+    // one of them has to be built first. The closures are only called later.
+    this.tasks = new TaskPanel(root, httpTaskStore(), {
+      start: (assignment) => this.recorder.start(assignment),
+      stop: () => this.recorder.stop(),
+      assignment: () => this.recorder.assignment(),
+    });
 
     const ctx = this.canvas.getContext("2d");
     if (ctx === null) throw new Error("2D canvas context unavailable");
@@ -77,6 +118,10 @@ export class App {
     window.addEventListener("resize", () => fitCanvas(this.canvas));
     window.addEventListener("keydown", (e) => {
       if (e.repeat) return;
+      // d, f, p and c are letters, and the recorder's dialog has text fields in
+      // it. Without this, naming a recording "debug flicker" reopens the camera
+      // twice and fires the shutter.
+      if (isTextEntry(e.target)) return;
       const key = e.key.toLowerCase();
       if (key === "d" || key === "f") {
         e.preventDefault();
@@ -86,6 +131,14 @@ export class App {
       } else if (key === "c") {
         this.experience.requestCapture(performance.now());
       }
+    });
+
+    window.addEventListener("error", (event) => {
+      this.lastCrash = `${event.message} (${event.filename}:${event.lineno})`;
+    });
+    window.addEventListener("unhandledrejection", (event) => {
+      const reason: unknown = event.reason;
+      this.lastCrash = reason instanceof Error ? reason.message : String(reason);
     });
 
     try {
@@ -117,6 +170,7 @@ export class App {
   stop(): void {
     this.running = false;
     this.loopGeneration++;
+    this.recorder.cameraChanging();
     this.engine.close();
     stopCamera(this.stream);
     this.stream = null;
@@ -145,29 +199,54 @@ export class App {
   }
 
   private onFrame(now: number, generation: number, presentedFrames: number | null): void {
+    try {
+      this.processFrame(now, generation, presentedFrames);
+    } catch (error) {
+      // The loop outlives a bad frame. Whatever threw is recorded and the next
+      // frame is scheduled anyway: a station that goes black because one draw
+      // failed is worse than one that draws the next frame.
+      this.lastCrash = error instanceof Error ? error.message : String(error);
+      console.error(error);
+      this.scheduleFrame(generation);
+    }
+  }
+
+  private processFrame(now: number, generation: number, presentedFrames: number | null): void {
     if (generation !== this.loopGeneration) return;
     if (presentedFrames !== null) this.skipped.tick(presentedFrames);
     // A puppet replaces the detectors outright rather than merging with them:
     // half-real hands would be the one kind of evidence worse than none.
     const frame = this.puppet.active
-      ? this.puppet.frame(now, window.innerWidth / window.innerHeight)
+      ? // A puppet replaces the hands. The ear is a separate sense and keeps
+        // working, so a spoken "stop" still stops a scripted run.
+        withHeard(
+          this.puppet.frame(now, window.innerWidth / window.innerHeight),
+          this.engine.hear(),
+        )
       : this.engine.step(this.video, now);
     if (frame !== null) {
       this.fps.tick(now);
+      this.lastFrameAt = performance.now();
       const cursor = this.experience.update(frame, this.cursor.update(frame));
       this.lastFrame = frame;
       this.lastCursor = cursor;
+      // Sampled before the words are acted on, so the take that a spoken "stop"
+      // ends has that word in its own trace.
+      this.recorder.sample(frame, cursor);
+      for (const utterance of frame.heard) this.onHeard(utterance);
       const showDebug = this.mode === "debug";
       drawOverlay(this.ctx, frame, cursor, showDebug);
 
       if (showDebug && frame.t - this.lastHudAt >= 1000 / CONFIG.ui.hudHz) {
         this.lastHudAt = frame.t;
+        this.recorder.setVoice(this.engine.voice);
         this.hud.render(frame, cursor, {
           mode: this.mode,
           fps: this.fps.fps,
           capturedFps: this.capturedFps,
           camera: this.source,
           timings: this.engine.detectorTimings,
+          voice: this.engine.voice,
         });
       }
     }
@@ -194,6 +273,9 @@ export class App {
   private onCameraLost(): void {
     this.running = false;
     this.loopGeneration++;
+    // Whatever was recorded up to the moment the camera went is worth keeping:
+    // it is the footage of the thing that just failed.
+    this.recorder.cameraChanging();
     this.source = "disconnected";
     document.body.classList.remove("is-live");
     // showError un-hides the HUD, so this reaches a visitor in final mode too.
@@ -221,6 +303,7 @@ export class App {
       .then(async () => {
         if (mode === this.mode || this.stream === null) return;
         const previousMode = this.mode;
+        this.recorder.cameraChanging();
         this.loopGeneration++;
         stopCamera(this.stream);
         this.stream = null;
@@ -239,35 +322,131 @@ export class App {
         }
 
         this.mode = mode;
+        this.lastCameraError = null;
         this.source = describeStream(this.stream, mode);
         this.watchStream(this.stream);
         this.presentMode();
         this.startFrameLoop();
       })
       .catch((error: unknown) => {
+        this.lastCameraError = `${mode}: ${error instanceof Error ? error.message : String(error)}`;
         console.error(error);
       });
   }
 
   private presentMode(): void {
     document.body.dataset.cameraMode = this.mode;
-    this.hud.setVisible(this.mode === "debug");
+    const debug = this.mode === "debug";
+    this.hud.setVisible(debug);
+    this.recorder.setVisible(debug);
+    this.tasks.setVisible(debug);
+    // The mirror does not listen to the hallway. See ADR 0016.
+    this.engine.listen(debug);
+  }
+
+  /** Tells the ear it heard something. The debug bridge's door. See ADR 0016. */
+  say(text: string): void {
+    this.engine.say(text);
   }
 
   /** Everything the frame loop knows, for the debug bridge. Dev only. */
   loop(): LoopSnapshot {
     return {
       live: this.running,
+      voice: this.engine.voice,
       cameraMode: this.mode,
       cameraSource: this.source,
       // Both meters hold a rolling average that never decays, so a dead loop
       // would keep reporting the rate it managed before it died.
       fps: this.running ? this.fps.fps : 0,
       capturedFps: this.running ? this.capturedFps : 0,
+      sinceLastFrameMs: this.lastFrameAt === 0 ? -1 : performance.now() - this.lastFrameAt,
       timings: this.engine.detectorTimings,
+      error: this.lastCameraError,
+      crash: this.lastCrash,
       frame: this.lastFrame,
       cursor: this.lastCursor,
     };
+  }
+
+  /**
+   * Something was said. While a dialog is waiting for words it is words;
+   * otherwise it is the one command this station has. See ADR 0016.
+   */
+  private onHeard(utterance: Utterance): void {
+    const action = routeUtterance(utterance, {
+      dictating: this.recorder.dictating,
+      recording: this.recorder.recording,
+    });
+    if (action.kind === "dictate") this.recorder.dictate(action.text);
+    else if (action.kind === "stop") this.recorder.stop();
+  }
+
+  private recordingDiagnostics(): RecordingDiagnostics {
+    return {
+      cameraMode: this.mode,
+      cameraSource: this.source,
+      video: { width: this.video.videoWidth, height: this.video.videoHeight },
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+      },
+      perceptionSource: this.puppet.active ? "puppet" : "camera",
+      fps: this.running ? this.fps.fps : 0,
+      capturedFps: this.running ? this.capturedFps : 0,
+      detectors: this.engine.detectorTimings,
+      cameraError: this.lastCameraError,
+    };
+  }
+
+  /**
+   * Writes a debug recording to the station's own disk, in two posts: the
+   * manifest first, then the video against the name the server gave it back.
+   *
+   * Manifest first because it is the half that survives a failure usefully. If
+   * the video upload dies, what is left on disk still says what was being
+   * recorded, when, on which camera mode, and what the models reported - and
+   * the browser still holds the take. The other order leaves an unlabelled
+   * video of somebody in a hallway, which is the one artifact this project must
+   * not produce. See ADR 0014.
+   */
+  private async saveRecording(take: RecordingTake): Promise<string> {
+    const manifest = await fetch("/api/recordings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(take.manifest),
+    });
+    if (!manifest.ok) throw new Error(`recording server returned ${manifest.status}`);
+    const named = (await manifest.json()) as { stem?: unknown };
+    if (typeof named.stem !== "string") throw new Error("recording server response was invalid");
+
+    const video = await fetch("/api/recordings", {
+      method: "POST",
+      headers: {
+        "Content-Type": take.video.type === "" ? "video/webm" : take.video.type,
+        "X-Recording-Stem": named.stem,
+      },
+      body: take.video,
+    });
+    if (!video.ok) throw new Error(`recording server returned ${video.status} for the video`);
+    const saved = (await video.json()) as { filename?: unknown };
+    if (typeof saved.filename !== "string")
+      throw new Error("recording server response was invalid");
+    console.info(`[HomeWebcam] saved recordings/${saved.filename}`);
+
+    // A take that answers a task is filed against the step that asked for it,
+    // after the video is safely on disk and never before: a run pointing at a
+    // recording that failed to save is worse than no run at all.
+    if (take.assignment !== null) {
+      await this.tasks.attach(take.assignment, {
+        recording: saved.filename.replace(/\.webm$/, ""),
+        note: take.description,
+        perceptionSource: take.manifest.perception.source,
+        digest: take.digest,
+      });
+    }
+    return saved.filename;
   }
 
   private async capturePicture(): Promise<string> {
@@ -303,4 +482,24 @@ export class App {
     if (typeof result.filename !== "string") throw new Error("Capture server response was invalid");
     return result.filename;
   }
+}
+
+/** The puppet's frame, plus anything the real ear heard while it was driving. */
+function withHeard(frame: PerceptionFrame | null, heard: Utterance[]): PerceptionFrame | null {
+  return frame === null ? null : { ...frame, heard };
+}
+
+/**
+ * A keystroke inside a text field belongs to the field. The station's single-key
+ * shortcuts are letters, so without this, typing a name into the recorder's
+ * dialog drives the app.
+ */
+function isTextEntry(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  );
 }

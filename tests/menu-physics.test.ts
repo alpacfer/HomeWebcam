@@ -27,6 +27,7 @@ function frame(t: number, hands: Vec2[] = []): PerceptionFrame {
     seq: Math.round(t),
     t,
     faces: [],
+    heard: [],
     hands: hands.map(
       (palmCenter, i): HandObservation => ({
         side: i === 0 ? "right" : "left",

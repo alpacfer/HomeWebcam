@@ -123,6 +123,29 @@ export interface FaceObservation {
   identity: Identity | null;
 }
 
+/**
+ * Something said out loud, as the speech model heard it.
+ *
+ * The station has one ear and it is on the same clock as the camera: an
+ * utterance arrives on the first frame after the model finished with it, which
+ * is a second or so after the mouth stopped moving. `startedAt` and `endedAt`
+ * are when it was *said*, so a trace can line words up with hands.
+ */
+export interface Utterance {
+  /** As written, punctuation and all: " Stop that." */
+  text: string;
+  /** Lower-cased, punctuation dropped. What a command is matched against. */
+  words: string[];
+  startedAt: number;
+  endedAt: number;
+  /**
+   * "injected" means the station was told these words rather than hearing them,
+   * which is how the wiring is tested without a microphone. It is the same rule
+   * as the puppet's, for the same reason. See ADR 0011.
+   */
+  source: "microphone" | "injected";
+}
+
 /** One assembled observation of the world. Produced by PerceptionEngine.step(). */
 export interface PerceptionFrame {
   /** Monotonic frame counter since start. */
@@ -131,6 +154,8 @@ export interface PerceptionFrame {
   t: number;
   hands: HandObservation[];
   faces: FaceObservation[];
+  /** Said since the previous frame. Almost always empty. See ADR 0016. */
+  heard: Utterance[];
 }
 
 /**
@@ -157,4 +182,4 @@ export interface IdentityDetector {
   close(): void;
 }
 
-export const EMPTY_FRAME: PerceptionFrame = { seq: 0, t: 0, hands: [], faces: [] };
+export const EMPTY_FRAME: PerceptionFrame = { seq: 0, t: 0, hands: [], faces: [], heard: [] };

@@ -37,6 +37,64 @@
       </div>
       <pre id="hud"></pre>
     </main>
+
+    <!-- Outside the stage on purpose: an instrument for whoever is at the
+         keyboard, not part of the mirror. It appears in debug camera mode
+         only, which is also the only mode with a mouse pointer to press it
+         with. See src/debug/recorder.ts and docs/adr/0014-debug-recordings.md. -->
+    <div id="recorder" class="recorder recorder--hidden" data-phase="idle">
+      <button id="recorder-toggle" type="button" class="recorder__toggle">
+        <span id="recorder-ring" class="ring recorder__ring" aria-hidden="true"></span>
+        <span class="recorder__dot" aria-hidden="true"></span>
+      </button>
+      <span id="recorder-readout" class="recorder__readout">debug video</span>
+    </div>
+
+    <!-- The tasks the person at the station has been asked to perform. Each
+         step records itself. See src/debug/tasks.ts and ADR 0015. -->
+    <section id="tasks" class="tasks tasks--hidden" aria-label="Debug tasks">
+      <h2 class="tasks__heading">Tasks</h2>
+      <p id="tasks-empty" class="tasks__empty">Nothing to do. Ask for a task from the keyboard.</p>
+      <p id="tasks-error" class="tasks__error" hidden></p>
+      <ul id="tasks-list" class="tasks__list"></ul>
+    </section>
+
+    <dialog id="recorder-dialog" class="recorder__dialog">
+      <form id="recorder-form" class="recorder__form">
+        <h2 id="recorder-title" class="recorder__title">Debug recording</h2>
+        <p id="recorder-asked-for" class="recorder__asked-for" hidden></p>
+        <p id="recorder-summary" class="recorder__summary"></p>
+        <div id="recorder-name-row" class="recorder__row">
+          <label class="recorder__label" for="recorder-name">Name</label>
+          <input
+            id="recorder-name"
+            class="recorder__input"
+            name="name"
+            maxlength="60"
+            autocomplete="off"
+            placeholder="hand lost when backlit"
+          />
+        </div>
+        <label id="recorder-description-label" class="recorder__label" for="recorder-description">
+          What to look for
+        </label>
+        <textarea
+          id="recorder-description"
+          class="recorder__input recorder__input--multiline"
+          name="description"
+          rows="4"
+          placeholder="Cursor jumped to the other hand every few seconds while pointing at the picture tile."
+        ></textarea>
+        <p id="recorder-listening" class="recorder__listening" hidden>
+          Listening. Say it and it will be written here.
+        </p>
+        <p id="recorder-error" class="recorder__error" hidden></p>
+        <div class="recorder__actions">
+          <button id="recorder-discard" type="button" class="recorder__button">Discard</button>
+          <button type="submit" class="recorder__button recorder__button--primary">Save</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

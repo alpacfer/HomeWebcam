@@ -2,6 +2,7 @@ import type { CameraMode } from "../camera/camera.js";
 import type { CursorState } from "../interaction/cursor.js";
 import type { DetectorTimings } from "../perception/engine.js";
 import type { FaceObservation, PerceptionFrame } from "../perception/types.js";
+import type { VoiceStatus } from "../perception/voice.js";
 
 /** Everything the HUD shows that is not in the PerceptionFrame itself. */
 export interface HudStats {
@@ -15,6 +16,8 @@ export interface HudStats {
   camera: string;
   /** Per-detector cost. The budget at 60 fps is 16.7 ms for all of them. */
   timings: DetectorTimings;
+  /** What the ear is doing. See src/perception/voice.ts. */
+  voice: VoiceStatus;
 }
 
 /** Below this fraction of the negotiated rate the shortfall is called out. 0.8
@@ -54,6 +57,7 @@ export class Hud {
         ? "raise a hand to point"
         : `cursor ${cursor.position.x.toFixed(2)}, ${cursor.position.y.toFixed(2)} · dwell ${(cursor.dwellProgress * 100).toFixed(0)}%`,
     );
+    lines.push(describeVoice(stats.voice));
     lines.push("D debug · F final");
 
     this.root.textContent = lines.join("\n");
@@ -76,6 +80,25 @@ function describeShortfall(stats: HudStats): string {
   if (claimed === 0 || stats.capturedFps === 0) return "";
   if (stats.capturedFps >= claimed * SHORTFALL_RATIO) return "";
   return ` · CAMERA SHORT of ${claimed} (light? see docs/hardware.md)`;
+}
+
+/**
+ * One line for the ear. The level matters while tuning the gate, and whether
+ * the model is loaded matters the first time somebody says something and
+ * nothing happens for forty seconds. See CONFIG.voice.
+ */
+function describeVoice(voice: VoiceStatus): string {
+  if (voice.error !== null) return `ear ${voice.error}`;
+  if (!voice.listening) return "ear off";
+  const level = `${(voice.level * 100).toFixed(0)}%`;
+  if (!voice.ready) return `ear loading · level ${level}`;
+  const state = voice.speaking ? "hearing" : voice.pending > 0 ? "thinking" : "listening";
+  return (
+    `ear ${state} · level ${level}` +
+    (voice.lastText === ""
+      ? ""
+      : ` · ${voice.lastSource === "injected" ? "INJECTED" : "heard"} "${voice.lastText.trim().slice(0, 20)}"`)
+  );
 }
 
 function describeFace(face: FaceObservation): string {

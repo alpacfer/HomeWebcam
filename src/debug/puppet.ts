@@ -64,6 +64,7 @@ export class Puppet {
       seq,
       t: now,
       faces: [],
+      heard: [],
       hands: this.poseAt(now - this.startedAt).hands.map((hand) =>
         fixtureHand({
           indexTip: hand.at,

@@ -39,6 +39,12 @@ friction; the mandatory end-of-task review in `docs/development-workflow.md` is 
 | [0014. Closing the window stranded the station](0014-closing-the-window-stranded-the-station.md) | integrated | Camera loss is an error on screen; `start.sh` reuses a running server. |
 | [0015. An unsupported flag put words on the mirror](0015-an-unsupported-flag-put-words-on-the-mirror.md) | integrated | The camera is granted in the Chrome profile; no flag, no banner, no prompt. |
 | [0016. A check read the camera through the ring](0016-a-check-read-the-camera-through-the-ring.md) | integrated | The ring sampler only reads its outer band, and is re-tested against a mirrored ring. |
+| [0017. A generated name failed its own guard](0017-a-generated-name-failed-its-own-guard.md) | integrated | The stem builder and the path guard are tested against each other. |
+| [0018. A hidden text field kept the keyboard](0018-a-hidden-text-field-kept-the-keyboard.md) | integrated | Closing the dialog releases focus; tests and `npm run verify` check the shortcuts still work. |
+| [0019. The snapshot said hidden while it was on screen](0019-the-snapshot-said-hidden-while-it-was-on-screen.md) | integrated | `verify` reads computed style, and the workflow states the rule beyond progress arcs. Addendum: `[hidden]` now wins the cascade outright. |
+| [0020. A run lost where its hands came from](0020-a-run-lost-where-its-hands-came-from.md) | integrated | The server keeps a run's provenance, calls a lost one `unknown`, and a test pins it. |
+| [0021. A model that would not load blamed the wrong thing](0021-a-model-that-would-not-load-blamed-the-wrong-thing.md) | integrated | Local assets 404 with their path, and every miss is listed at `/api/missing`. |
+| [0022. A covered window read as a slow station](0022-a-covered-window-read-as-a-slow-station.md) | integrated | The snapshot carries time since the last frame; `state` says the rates are stale. |
 
 ## Record template
 

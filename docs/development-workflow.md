@@ -98,6 +98,10 @@ tooling will tell you so. See friction 0011.
   detail does not cost a capture, a crop and a second look.
 - Direction, phase, and progress are not verifiable by eye. An arc at 0% or 100% looks identical
   whichever way it fills. Pin the value, capture, and sample the pixels. See friction 0004.
+- A check that reads a value the app also wrote proves the app agrees with itself. For anything
+  about what is *on screen* - visibility, direction, position, colour - read what the browser
+  computed or the pixels it drew. A control sat on the visitor's mirror while the snapshot, a verify
+  check and a DOM test all called it hidden. See friction 0019.
 
 Do not claim live-camera or gesture verification when only a synthetic feed or keyboard test hook
 was exercised. State exactly what was and was not verified.
