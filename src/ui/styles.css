@@ -95,6 +95,7 @@ body {
 }
 
 #camera,
+#paint,
 #overlay {
   position: absolute;
   inset: 0;
@@ -102,6 +103,9 @@ body {
   height: 100%;
 }
 
+/* The painting sits under the overlay in the same layer, so the brush cursor is
+   drawn over the ink and never behind it. Document order settles the tie. */
+#paint,
 #overlay {
   z-index: 2;
   pointer-events: none;
@@ -117,13 +121,18 @@ body {
     filter 250ms ease-out;
 }
 
+/*
+ * Keyed on the view, not the camera profile: what is on the glass is the
+ * instruments or the mirror, and either can be shown over either camera
+ * profile since ADR 0021. Nothing in this file may read data-camera-mode.
+ */
 /* The debug view is the unstyled image that the perception models receive. */
-body[data-camera-mode="debug"] #camera {
+body[data-view="debug"] #camera {
   filter: none;
 }
 
 /* Restrained starting correction; verify at the station under its actual light. */
-body[data-camera-mode="final"] #camera {
+body[data-view="final"] #camera {
   filter: contrast(1.04) saturate(1.06);
 }
 
@@ -146,7 +155,7 @@ body.is-live #camera {
   transition: opacity 250ms ease-out;
 }
 
-body[data-camera-mode="debug"] #stage::after {
+body[data-view="debug"] #stage::after {
   opacity: 0;
 }
 
@@ -265,7 +274,8 @@ body[data-camera-mode="debug"] #stage::after {
 }
 
 /* Reveal highlight: the light the hand carries across the surface. */
-.tile::before {
+.tile::before,
+.chip::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -281,7 +291,8 @@ body[data-camera-mode="debug"] #stage::after {
 
 /* The same light again, this time only on the border: a 1 px gradient ring cut
    out with two masks so the fill in the middle is discarded. */
-.tile::after {
+.tile::after,
+.chip::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -371,6 +382,122 @@ body[data-camera-mode="debug"] #stage::after {
 .tile__hint svg {
   width: 25px;
   height: 25px;
+}
+
+/* ------------------------------------------------------------- paint mode */
+
+/*
+ * The tool tray: the menu again, at a third of the size, down the right-hand
+ * side. Down the side and not along the bottom, because a hand hanging at rest
+ * is in the bottom of the frame and a target where hands rest fires by itself.
+ * Not flush with the edge: the edge of the screen is the edge of the camera's
+ * view, and a hand has to be stretched to reach it.
+ */
+.tray-anchor {
+  position: absolute;
+  top: 50%;
+  right: 44px;
+  z-index: 3;
+  transform: translateY(-50%);
+}
+
+.tray {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 14px;
+  align-items: center;
+  perspective: 700px;
+}
+
+.tray__column {
+  display: grid;
+  /* The widths and the two tools are one column, in two groups; the wider gap
+     is the seam a visitor reads as "these are different kinds of thing". */
+  gap: 18px;
+}
+
+.tray__group {
+  display: grid;
+  gap: 10px;
+}
+
+.chip {
+  --sheen-x: 50%;
+  --sheen-y: 50%;
+  --glow: 0;
+  position: relative;
+  display: grid;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  place-items: center;
+  color: var(--ink);
+  border: none;
+  /* Round, where the mode tiles are squircles: a tool is not a mode. */
+  border-radius: 50%;
+  transition:
+    background 220ms ease,
+    box-shadow 220ms ease;
+}
+
+.chip--hovered {
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.04) 46%),
+    var(--glass-tint-strong);
+}
+
+/* White, not the accent: the accent is one of the six colours on offer. */
+.chip--selected {
+  box-shadow:
+    inset 1.5px 1.5px 1px -0.5px rgba(255, 255, 255, 0.8),
+    inset -1.5px -1.5px 1px -0.5px rgba(255, 255, 255, 0.34),
+    inset 0 0 0 2px rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(0, 0, 0, 0.22),
+    0 12px 28px rgba(0, 0, 0, 0.32),
+    0 0 26px rgba(255, 255, 255, 0.22);
+}
+
+.chip__ring {
+  --ring-inset: -6px;
+  --ring-radius: 50%;
+  --ring-width: 3px;
+}
+
+.chip__swatch {
+  width: 28px;
+  height: 28px;
+  background: var(--swatch);
+  border-radius: 50%;
+  box-shadow:
+    inset 0 -1px 2px rgba(0, 0, 0, 0.25),
+    0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* A width, shown as the dot it would leave. --dot is set by the tray. */
+.chip__dot {
+  width: var(--dot, 16px);
+  height: var(--dot, 16px);
+  background: var(--ink);
+  border-radius: 50%;
+  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.5));
+}
+
+.chip__icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.5));
+}
+
+.chip__icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.chip--clear {
+  color: var(--danger);
 }
 
 /* -------------------------------------------------------- the picture flow */
@@ -528,7 +655,7 @@ body[data-perception-source="puppet"]::after {
  * with something to press. A visitor drives this mirror with their hands and
  * must never find a cursor parked in the corner of their reflection.
  */
-body[data-camera-mode="debug"] {
+body[data-view="debug"] {
   cursor: default;
 }
 
@@ -671,6 +798,22 @@ body[data-camera-mode="debug"] {
 /* Qualified by the id for the same reason the recorder's is. See friction 0019. */
 #tasks.tasks--hidden {
   display: none;
+}
+
+/*
+ * The paint tray hangs down this same edge, and the person doing a task needs
+ * it. The list is what moves out of the way: it is an instrument, read with the
+ * eyes and pressed with a mouse, so the browser hit-tests it wherever it lands.
+ * The tray is a hand target whose rectangles are measured once and cached, and
+ * moving one of those without re-measuring puts every tool a hand's width from
+ * where it is drawn. See friction 0026.
+ *
+ * Below the rule it overrides, not above it. It would win either way - it is
+ * the more specific selector - but a stylesheet that only reads correctly if
+ * you compare specificities is how friction 0019 happened, twice.
+ */
+body[data-view="debug"] #tasks {
+  right: 190px;
 }
 
 .tasks__heading {
@@ -1039,6 +1182,24 @@ body.is-live #boot {
 @media (max-width: 900px) {
   .dock {
     gap: 14px;
+  }
+
+  .tray-anchor {
+    right: 20px;
+  }
+
+  .tray__group {
+    gap: 8px;
+  }
+
+  .chip {
+    width: 44px;
+    height: 44px;
+  }
+
+  .chip__swatch {
+    width: 22px;
+    height: 22px;
   }
 
   .tile {

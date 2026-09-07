@@ -14,6 +14,17 @@ export interface Vec2 {
   y: number;
 }
 
+/**
+ * A point in metres. Only the hand's world landmarks use it: x is mirrored to
+ * agree with screen space (a point on the visitor's right has positive x), y is
+ * down as on screen, and z is toward the camera as MediaPipe reports it.
+ */
+export interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
 /** Normalized rectangle in mirrored screen space. */
 export interface Rect {
   x: number;
@@ -38,6 +49,15 @@ export interface HandObservation {
   side: "left" | "right";
   /** 21 MediaPipe hand landmarks. Index constants live in ./landmarks.ts. */
   landmarks: Vec2[];
+  /**
+   * The same 21 landmarks in metres, origin at the hand's geometric centre, as
+   * MediaPipe's `worldLandmarks` gives them - with x mirrored, so left and right
+   * agree with `landmarks`. Two things `landmarks` cannot offer: a distance that
+   * reads the same at one metre and at three without dividing by a hand size,
+   * and depth, so two fingertips that only *project* onto the same point are
+   * not the same point. See ADR 0021. Empty when the source had none.
+   */
+  world: Vec3[];
   /** Index fingertip. The pointing device for the cursor. */
   indexTip: Vec2;
   /** Mean of the five palm landmarks. Steadier than any single point. */

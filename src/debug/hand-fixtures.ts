@@ -1,5 +1,5 @@
 import { HAND, PALM_LANDMARKS } from "../perception/landmarks.js";
-import type { GestureName, HandObservation, Vec2 } from "../perception/types.js";
+import type { GestureName, HandObservation, Vec2, Vec3 } from "../perception/types.js";
 
 /**
  * Synthetic hands, shaped like the ones MediaPipe produces.
@@ -44,6 +44,14 @@ const OPEN_HAND: readonly Vec2[] = [
   { x: 0.35, y: -0.8 }, // 20 pinky tip
 ];
 
+/**
+ * How tall the fixture hand is in metres, wrist to middle fingertip. A nominal
+ * adult hand, so a fixture's world landmarks land in the range a real one does
+ * and the metric pinch gate can be exercised; nothing about detection follows
+ * from it. Verify at the station against a real hand's worldLandmarks.
+ */
+const FIXTURE_HAND_METRES = 0.19;
+
 /** Index of the knuckle each finger folds toward, and the joints that fold. */
 const FINGERS: ReadonlyArray<{ mcp: number; joints: readonly number[] }> = [
   { mcp: 1, joints: [2, 3, 4] }, // thumb
@@ -73,8 +81,20 @@ const SHAPES: Record<GestureName, readonly number[]> = {
 };
 
 export interface FixtureOptions {
-  /** Where the index fingertip goes, in normalized mirrored screen space. */
+  /** Where the anchor lands, in normalized mirrored screen space. */
   indexTip: Vec2;
+  /**
+   * Which point of the hand `indexTip` positions. The index fingertip by
+   * default, which is what the cursor tracks; the pinch point for Paint mode,
+   * whose pointer is the midpoint of thumb and index, so a scenario that says
+   * "paint here" puts the ink here.
+   */
+  anchor?: "index" | "pinch";
+  /**
+   * 0 is the gesture's own hand; 1 has the thumb tip and index tip touching.
+   * A pinch is not a gesture the recognizer has, so it is a shape on top of one.
+   */
+  pinch?: number;
   gesture: GestureName;
   side: "left" | "right";
   /** Hand height as a fraction of the viewport height. 0.22 is arm's length. */
@@ -109,24 +129,60 @@ export function fixtureHand(options: FixtureOptions): HandObservation {
     });
   });
 
+  // The two tips close on their midpoint, and the joints behind them follow
+  // half as far, so the fingers bend toward each other rather than teleport.
+  const pinch = Math.min(1, Math.max(0, options.pinch ?? 0));
+  if (pinch > 0) {
+    const thumb = shaped[HAND.THUMB_TIP];
+    const index = shaped[HAND.INDEX_TIP];
+    if (thumb === undefined || index === undefined) throw new Error("fixture hand lost a tip");
+    const meet = { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 };
+    for (const [joint, share] of [
+      [HAND.THUMB_TIP, 1],
+      [HAND.INDEX_TIP, 1],
+      [3, 0.5],
+      [7, 0.5],
+    ] as const) {
+      const point = shaped[joint];
+      if (point === undefined) continue;
+      point.x += pinch * share * (meet.x - point.x);
+      point.y += pinch * share * (meet.y - point.y);
+    }
+  }
+
   // A left hand is the mirror of a right one about the wrist.
   const handedness = options.side === "left" ? -1 : 1;
   const sx = (options.scale / options.aspect) * handedness;
   const sy = options.scale;
 
   const tip = shaped[HAND.INDEX_TIP];
-  if (tip === undefined) throw new Error("fixture hand has no index tip");
-  const originX = options.indexTip.x - tip.x * sx;
-  const originY = options.indexTip.y - tip.y * sy;
+  const thumbTip = shaped[HAND.THUMB_TIP];
+  if (tip === undefined || thumbTip === undefined) throw new Error("fixture hand has no tips");
+  const anchor =
+    options.anchor === "pinch" ? { x: (tip.x + thumbTip.x) / 2, y: (tip.y + thumbTip.y) / 2 } : tip;
+  const originX = options.indexTip.x - anchor.x * sx;
+  const originY = options.indexTip.y - anchor.y * sy;
 
   const landmarks = shaped.map((point) => ({
     x: originX + point.x * sx,
     y: originY + point.y * sy,
   }));
 
+  // World landmarks are the same shape in metres, centred on the hand as
+  // MediaPipe centres them, flat (z = 0) because a fixture has no depth to
+  // report. Mirrored the same way the screen ones are, so the two agree on
+  // which side the thumb is.
+  const centre = mean(shaped);
+  const world: Vec3[] = shaped.map((point) => ({
+    x: (point.x - centre.x) * FIXTURE_HAND_METRES * handedness,
+    y: (point.y - centre.y) * FIXTURE_HAND_METRES,
+    z: 0,
+  }));
+
   return {
     side: options.side,
     landmarks,
+    world,
     indexTip: at(landmarks, HAND.INDEX_TIP),
     palmCenter: mean(PALM_LANDMARKS.map((index) => at(landmarks, index))),
     gesture: options.gesture,

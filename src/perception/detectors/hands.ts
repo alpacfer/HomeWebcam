@@ -2,9 +2,9 @@ import { FilesetResolver, GestureRecognizer } from "@mediapipe/tasks-vision";
 import { CONFIG } from "../../config.js";
 import { at } from "../../lib/assert.js";
 import { HAND, PALM_LANDMARKS } from "../landmarks.js";
-import { toMirroredScreen } from "../mirror.js";
+import { toMirroredScreen, toMirroredWorld } from "../mirror.js";
 import { MODEL_URL, WASM_PATH } from "../models.js";
-import type { Detector, GestureName, HandObservation, Vec2 } from "../types.js";
+import type { Detector, GestureName, HandObservation, Vec2, Vec3 } from "../types.js";
 
 /**
  * Hands and gestures in one pass.
@@ -19,7 +19,7 @@ export class HandsDetector implements Detector<HandObservation[]> {
   async init(): Promise<void> {
     const fileset = await FilesetResolver.forVisionTasks(WASM_PATH);
     this.recognizer = await GestureRecognizer.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: MODEL_URL.gestureRecognizer, delegate: "GPU" },
+      baseOptions: { modelAssetPath: MODEL_URL.gestureRecognizer, delegate: CONFIG.hands.delegate },
       runningMode: "VIDEO",
       numHands: CONFIG.hands.maxHands,
       minHandDetectionConfidence: CONFIG.hands.minDetectionConfidence,
@@ -36,6 +36,9 @@ export class HandsDetector implements Detector<HandObservation[]> {
       const raw = at(result.landmarks, i, "landmarks");
       // Camera space in, mirrored screen space out. The one flip.
       const landmarks: Vec2[] = raw.map(toMirroredScreen);
+      // The same pass produces the metric landmarks; they were being dropped
+      // on the floor for the first twenty ADRs of this project. See ADR 0021.
+      const world: Vec3[] = (result.worldLandmarks[i] ?? []).map(toMirroredWorld);
 
       const topGesture = result.gestures[i]?.[0];
       const handedness = result.handedness[i]?.[0]?.categoryName;
@@ -43,6 +46,7 @@ export class HandsDetector implements Detector<HandObservation[]> {
       hands.push({
         side: resolveSide(handedness),
         landmarks,
+        world,
         indexTip: at(landmarks, HAND.INDEX_TIP, "indexTip"),
         palmCenter: mean(PALM_LANDMARKS.map((idx) => at(landmarks, idx, "palm"))),
         gesture: (topGesture?.categoryName ?? "None") as GestureName,

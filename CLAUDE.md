@@ -9,8 +9,8 @@
 - **Ask the station before you write a script.** `npm run station -- state`
   returns one typed snapshot of everything it is doing. Nine throwaway CDP
   scripts in one session is what happened before it existed; see friction 0009.
-- **Drive interactions with `npm run verify`, not with a person.** Seventeen
-  checks, about forty seconds, scripted hands. It cannot verify perception, and
+- **Drive interactions with `npm run verify`, not with a person.** Thirty-four
+  checks, about two minutes, scripted hands. It cannot verify perception, and
   it says so loudly - a screenshot taken under it wears a badge. Read
   [ADR 0011](docs/adr/0011-puppet-perception.md) before quoting one as evidence.
 - **When you need a body in the room, ask for one.** `npm run task -- new

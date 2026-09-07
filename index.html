@@ -9,6 +9,10 @@
     <main id="stage">
       <!-- playsinline + muted are what let the stream autoplay without a gesture. -->
       <video id="camera" autoplay playsinline muted></video>
+      <!-- The painting. Under the overlay so the brush cursor is drawn on top of
+           the ink, over the vignette so a line reaches the edge of the mirror.
+           Shown in Paint mode only; see src/ui/paint-layer.ts. -->
+      <canvas id="paint" class="paint" hidden></canvas>
       <canvas id="overlay"></canvas>
 
       <!-- The dock's tiles are built in src/ui/experience.ts, from one list of
@@ -16,6 +20,12 @@
       <section id="experience" aria-label="Mirror modes">
         <nav id="dock" class="dock" aria-label="Choose a mode"></nav>
       </section>
+
+      <!-- Paint mode's tools, built in src/ui/paint-tray.ts from CONFIG.paint.
+           The anchor positions it; the tray inside carries the spring travel. -->
+      <div id="paint-tray-anchor" class="tray-anchor" hidden aria-hidden="true">
+        <nav id="paint-tray" class="tray" aria-label="Paint tools"></nav>
+      </div>
 
       <div id="countdown" class="countdown" aria-hidden="true" aria-live="assertive">
         <div id="countdown-dial" class="countdown__dial glass glass--clear">

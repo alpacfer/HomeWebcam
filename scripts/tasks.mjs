@@ -122,6 +122,7 @@ async function cmdShow([id]) {
       }
       if (run.note !== "") console.log(`     note: ${run.note}`);
       console.log(`     ${describeDigest(run.digest)}`);
+      printPinch(run.digest?.paint);
       const errors = await recordingErrors(run.recording);
       if (errors.length > 0) {
         console.log(`     ⚠ ${errors.length} error(s) while recording:`);
@@ -218,17 +219,28 @@ async function printFrames(stem, wanted) {
     return;
   }
   const step = Math.max(1, Math.floor(trace.length / wanted));
-  console.log(`     ${"t".padStart(7)}  ${"hand".padEnd(22)} ${"cursor".padEnd(15)} scene`);
+  // The pinch column only appears when the take went through Paint mode.
+  const painted = trace.some((sample) => sample.scene.paint != null);
+  console.log(
+    `     ${"t".padStart(7)}  ${"hand".padEnd(22)} ${"cursor".padEnd(15)} ${painted ? `${"pinch".padEnd(14)} ` : ""}scene`,
+  );
   for (let i = 0; i < trace.length; i += step) {
     const sample = trace[i];
     const hand = sample.hands[0];
     const cursor = sample.cursor;
+    const paint = sample.scene.paint ?? null;
+    const pinch =
+      paint === null
+        ? "-"
+        : `${paint.pinch === null ? "-" : paint.pinch.toFixed(2)} ${paint.painting ? "paint" : paint.pinched ? "pinch" : "open"}`;
     console.log(
       `     ${`${(sample.ms / 1000).toFixed(2)}s`.padStart(7)}  ` +
         `${(hand === undefined ? "-" : `${hand.side} ${hand.gesture}@${hand.confidence.toFixed(2)}`).padEnd(22)} ` +
         `${(cursor.position === null ? "-" : `${cursor.position.x.toFixed(2)},${cursor.position.y.toFixed(2)} d${(cursor.dwell * 100).toFixed(0)}%`).padEnd(15)} ` +
+        (painted ? `${pinch.padEnd(14)} ` : "") +
         `${sample.scene.mode}/${sample.scene.phase}` +
-        `${sample.scene.menu.hovered === null ? "" : ` over ${sample.scene.menu.hovered}`}`,
+        `${sample.scene.menu.hovered === null ? "" : ` over ${sample.scene.menu.hovered}`}` +
+        `${paint?.hovered == null ? "" : ` over ${paint.hovered}`}`,
     );
   }
 }
@@ -253,8 +265,66 @@ function describeDigest(digest) {
     `faces ${percent(digest.facesSeen)} · cursor ${percent(digest.cursorSeen)}` +
     (gestures === "" ? "" : ` · ${gestures}`) +
     (digest.activations > 0 ? ` · ${digest.activations} activation(s)` : "") +
-    (digest.maxDwell > 0 ? ` · dwell peaked ${percent(digest.maxDwell)}` : "")
+    (digest.maxDwell > 0 ? ` · dwell peaked ${percent(digest.maxDwell)}` : "") +
+    (digest.paint === null || digest.paint === undefined
+      ? ""
+      : ` · pinched ${percent(digest.paint.pinched)} · ${describeStrokes(digest.paint)}` +
+        ` · pinch ${digest.paint.pinch.min.toFixed(2)}-${digest.paint.pinch.max.toFixed(2)}` +
+        (digest.paint.metres == null
+          ? ""
+          : ` · ${(digest.paint.metres.min * 1000).toFixed(0)}-${(digest.paint.metres.max * 1000).toFixed(0)} mm`) +
+        (digest.paint.tools.length > 1 ? ` · ${digest.paint.tools.length} tools` : ""))
   );
+}
+
+/** Mirrors describeStrokes in src/debug/trace.ts. Old digests have no strokesDrawn. */
+function describeStrokes(paint) {
+  if (paint.strokesDrawn === undefined) return `${paint.strokes} stroke(s) on the glass`;
+  return paint.strokesDrawn === paint.strokes
+    ? `${paint.strokesDrawn} line(s) drawn`
+    : `${paint.strokesDrawn} line(s) drawn, ${paint.strokes} on the glass`;
+}
+
+/**
+ * Where this person's pinch actually sits, as a picture.
+ *
+ * The whole point of the histogram is the *valley*: a hand meaning to paint and
+ * the same hand merely moving are two clusters, and the threshold belongs
+ * between them. Min and max cannot show that and a median hides it. Each row
+ * says what a hand at that ratio would do under the gate the take was made
+ * with, so the reading is "the cluster I meant is on the wrong side of this".
+ */
+function printPinch(paint) {
+  const hist = paint?.histogram ?? [];
+  if (hist.length === 0) return;
+  const gate = paint.gate ?? { closeBelow: 0, openAbove: 0 };
+  const frames = hist.reduce((sum, bucket) => sum + bucket.frames, 0);
+  const widest = Math.max(...hist.map((bucket) => bucket.frames));
+  console.log(
+    `     pinch over ${frames} frames with a hand · gate: starts a line below ` +
+      `${gate.closeBelow}, ends one above ${gate.openAbove}`,
+  );
+
+  // Every bucket from the lowest to the highest, empty ones included: a gap in
+  // the middle is the answer, so it has to be drawn rather than skipped.
+  const step = 0.05;
+  const first = hist[0].at;
+  const last = hist[hist.length - 1].at;
+  for (let at = first; at <= last + 1e-9; at += step) {
+    const bucket = hist.find((b) => Math.abs(b.at - at) < 1e-9);
+    const n = bucket?.frames ?? 0;
+    const would = at < gate.closeBelow ? "starts" : at >= gate.openAbove ? "ends" : "holds";
+    const bar = "█".repeat(Math.round((n / widest) * 34));
+    console.log(`     ${at.toFixed(2)}  ${would.padEnd(6)} ${bar}${n === 0 ? "" : ` ${n}`}`);
+  }
+
+  // The sharpest number in the file: what the gate let through to begin a line.
+  // A line the person did not mean to draw names the threshold that allowed it.
+  if (Array.isArray(paint.strokeStarts) && paint.strokeStarts.length > 0) {
+    console.log(
+      `     ${paint.strokeStarts.length} line(s) began at ${paint.strokeStarts.join(", ")}`,
+    );
+  }
 }
 
 function statusMark(status) {

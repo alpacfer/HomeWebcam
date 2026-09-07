@@ -102,6 +102,26 @@ describe("TaskPanel", () => {
     ]);
   });
 
+  it("collapses a task that is done, so an open one stays on the screen", async () => {
+    // A done task rendered in full is most of a 1080p panel spent on work
+    // nobody has to do, and the open task below it goes off the bottom where
+    // the person standing at the station cannot press it. See friction 0029.
+    const { panel } = build([
+      task({ id: "answered", title: "Already answered", status: "done" }),
+      task({ id: "waiting", title: "Still to do" }),
+    ]);
+    panel.setVisible(true);
+    await panel.refresh();
+
+    const titles = [...document.querySelectorAll(".task__title")].map((e) => e.textContent);
+    expect(titles).toEqual(["Already answered", "Still to do"]);
+    // Every step button on screen belongs to the task that still needs a body.
+    const owners = steps().map((step) => step.closest(".task")?.getAttribute("data-task"));
+    expect(owners).toEqual(["waiting", "waiting"]);
+    const done = document.querySelector('[data-task="answered"]');
+    expect(done?.querySelector(".task__description")?.textContent).toContain("answered");
+  });
+
   it("says so when there is nothing to do", async () => {
     const { panel } = build([]);
     panel.setVisible(true);

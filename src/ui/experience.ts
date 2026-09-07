@@ -2,12 +2,14 @@ import { CONFIG } from "../config.js";
 import type { CursorState } from "../interaction/cursor.js";
 import { GestureHold } from "../interaction/gesture-hold.js";
 import { type MenuMotion, MenuPhysics, type PanelLayout } from "../interaction/menu-physics.js";
+import type { BrushCursor, PaintStatus } from "../interaction/paint-session.js";
 import { requireElement } from "../lib/assert.js";
 import type { GestureName, PerceptionFrame, Rect } from "../perception/types.js";
 import { ensureLens } from "./glass.js";
 import { ICON } from "./icons.js";
+import { PaintMode, type PaintScene } from "./paint-mode.js";
 
-type ExperienceMode = "home" | "picture";
+type ExperienceMode = "home" | "picture" | "paint";
 type PicturePhase = "idle" | "countdown" | "saving" | "saved" | "error";
 
 /**
@@ -26,6 +28,8 @@ export interface SceneSample {
     hovered: string | null;
     panels: Array<{ id: string; rect: Rect; glow: number }>;
   };
+  /** Null outside Paint mode. */
+  paint: PaintScene | null;
 }
 
 const NOWHERE: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -50,7 +54,9 @@ interface ModeSpec {
  */
 const MODES: readonly ModeSpec[] = [
   { id: "picture", label: "Picture", icon: "camera", gesture: "handPeace", selectable: true },
-  { id: "game", label: "Game", icon: "gameController", gesture: null, selectable: false },
+  // No gesture badge: the recognizer has no pinch, and the brush cursor teaches
+  // it better than a badge could, by showing the fingertips close on the ring.
+  { id: "paint", label: "Paint", icon: "paintBrush", gesture: null, selectable: true },
 ];
 
 interface Tile {
@@ -66,6 +72,8 @@ export class ExperienceUi {
   private readonly dock: HTMLElement;
   private readonly tiles: Tile[];
   private readonly pictureTile: Tile;
+  private readonly paintTile: Tile;
+  private readonly paint: PaintMode;
   private readonly countdown: HTMLElement;
   private readonly countdownDial: HTMLElement;
   private readonly countdownRing: HTMLElement;
@@ -104,6 +112,10 @@ export class ExperienceUi {
     const picture = this.tiles.find((tile) => tile.spec.id === "picture");
     if (picture === undefined) throw new Error("MODES must contain the picture mode");
     this.pictureTile = picture;
+    const paint = this.tiles.find((tile) => tile.spec.id === "paint");
+    if (paint === undefined) throw new Error("MODES must contain the paint mode");
+    this.paintTile = paint;
+    this.paint = new PaintMode(root, requireElement(root, "#paint", HTMLCanvasElement));
 
     this.setPhase("idle");
     window.addEventListener("resize", () => this.measure());
@@ -129,13 +141,50 @@ export class ExperienceUi {
     if (palm.activated && this.phase === "idle") this.startCountdown(frame.t);
 
     const aspect = window.innerWidth / window.innerHeight;
-    const motion = this.physics.update(frame, cursor, aspect);
+    // In Paint mode the pointer is the pinch point, for the menu as well: one
+    // hand, one place it points. A stroke in progress may pick nothing.
+    const pointer = this.mode === "paint" ? this.paint.point(frame, aspect) : null;
+    const menuCursor = pointer === null ? cursor : { ...cursor, position: pointer.position };
+    const motion = this.physics.update(frame, menuCursor, aspect, !this.paint.busy);
     this.lastMotion = motion;
     this.render(motion, this.mode === "home" ? victory.progress : palm.progress);
     if (motion.activated !== null) this.select(motion.activated);
 
+    let dwell = motion.dwell;
+    // The mode may have just been left through the menu; then the hand is done here.
+    if (pointer !== null && this.mode === "paint") {
+      dwell = Math.max(dwell, this.paint.update(frame, pointer, aspect, motion.hovered !== null));
+    }
+
     this.advancePicture(frame.t);
-    return { ...cursor, dwellProgress: motion.dwell, activated: motion.activated !== null };
+    return { ...menuCursor, dwellProgress: dwell, activated: motion.activated !== null };
+  }
+
+  /**
+   * The page was laid out differently without being resized - a camera-mode
+   * change moves the debug instruments, and a rule keyed on the mode can move
+   * anything. Hit rectangles are cached from a measurement, so they have to be
+   * taken again or every target sits where its control used to be.
+   * See friction 0026.
+   */
+  relayout(): void {
+    this.measure();
+    this.paint.relayout();
+  }
+
+  /** What the overlay should draw instead of the cursor. Null outside Paint mode. */
+  brush(): BrushCursor | null {
+    return this.mode === "paint" ? this.paint.brush() : null;
+  }
+
+  /** True while the glass is a canvas. The frame loop drops the face pass then. */
+  get painting(): boolean {
+    return this.mode === "paint";
+  }
+
+  /** Paint mode in numbers, for the HUD and the snapshot. Null outside it. */
+  paintStatus(): PaintStatus | null {
+    return this.mode === "paint" ? this.paint.status() : null;
   }
 
   /** Where the interface is right now. Read by the debug recorder's trace. */
@@ -153,6 +202,7 @@ export class ExperienceUi {
           glow: motion?.panels[index]?.glow ?? 0,
         })),
       },
+      paint: this.mode === "paint" ? this.paint.scene() : null,
     };
   }
 
@@ -160,6 +210,17 @@ export class ExperienceUi {
     if (this.mode === "picture") return;
     this.mode = "picture";
     this.presentMode();
+  }
+
+  enterPaint(): void {
+    if (this.mode === "paint") return;
+    this.mode = "paint";
+    this.presentMode();
+  }
+
+  /** Operator-only keyboard path: wipe the painting without a hand. */
+  clearPainting(): void {
+    this.paint.clear();
   }
 
   /** Operator-only keyboard path used to exercise the complete UI without a gesture. */
@@ -175,7 +236,7 @@ export class ExperienceUi {
     element.setAttribute("aria-label", spec.label);
     if (spec.selectable) {
       element.setAttribute("aria-pressed", "false");
-      element.addEventListener("click", () => this.select(this.tiles.indexOf(this.pictureTile)));
+      element.addEventListener("click", () => this.selectMode(spec.id));
     } else {
       element.classList.add("tile--locked");
       element.disabled = true;
@@ -214,7 +275,13 @@ export class ExperienceUi {
   }
 
   private select(index: number): void {
-    if (this.tiles[index]?.spec.id === "picture") this.enterPicture();
+    const id = this.tiles[index]?.spec.id;
+    if (id !== undefined) this.selectMode(id);
+  }
+
+  private selectMode(id: string): void {
+    if (id === "picture") this.enterPicture();
+    else if (id === "paint") this.enterPaint();
   }
 
   /**
@@ -323,8 +390,12 @@ export class ExperienceUi {
   private presentMode(): void {
     document.body.dataset.experienceMode = this.mode;
     const inPicture = this.mode === "picture";
+    const inPaint = this.mode === "paint";
     this.pictureTile.element.classList.toggle("tile--selected", inPicture);
     this.pictureTile.element.setAttribute("aria-pressed", String(inPicture));
+    this.paintTile.element.classList.toggle("tile--selected", inPaint);
+    this.paintTile.element.setAttribute("aria-pressed", String(inPaint));
+    this.paint.setActive(inPaint);
     // In picture mode the badge stops advertising the way in and starts showing
     // the shape that fires the shutter.
     const hint = this.pictureTile.hint;

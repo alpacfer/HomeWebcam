@@ -3,7 +3,7 @@ import { smoothstep } from "../lib/ease.js";
 import type { PerceptionFrame, Rect, Vec2 } from "../perception/types.js";
 import type { CursorState } from "./cursor.js";
 import { HandMotion } from "./hand-motion.js";
-import { brushOffset, idleDrift, SoftMount, toScreenUnits } from "./soft-mount.js";
+import { brushOffset, idleDrift, SoftMount, type Spring, toScreenUnits } from "./soft-mount.js";
 
 /**
  * Where the menu is, once hands have had their way with it.
@@ -24,6 +24,18 @@ export interface PanelLayout {
   rect: Rect;
   /** A locked panel is still brushed by hands; it just cannot be chosen. */
   selectable: boolean;
+  /**
+   * How long the cursor has to rest here before it picks this panel. Defaults
+   * to CONFIG.cursor.dwellMs; only something that cannot be undone asks for
+   * more. See CONFIG.paint.clearDwellMs.
+   */
+  dwellMs?: number;
+}
+
+/** Which springs a menu hangs on. The mode dock and the paint tray differ only here. */
+export interface MenuSprings {
+  dock: { spring: Spring; maxOffset: number };
+  tile: { spring: Spring; maxOffset: number };
 }
 
 export interface PanelMotion {
@@ -59,7 +71,7 @@ const AT_REST: PanelMotion = {
 
 export class MenuPhysics {
   private readonly motion = new HandMotion(CONFIG.ui.menu.velocitySmoothingHz);
-  private readonly dock = new SoftMount(CONFIG.ui.menu.dock.spring, CONFIG.ui.menu.dock.maxOffset);
+  private readonly dock: SoftMount;
   private mounts: SoftMount[] = [];
   private layout: PanelLayout[] = [];
   private dockLayout: Vec2 = { x: 0, y: 0 };
@@ -69,18 +81,32 @@ export class MenuPhysics {
   private hoveredSince = 0;
   private fired = false;
 
+  constructor(private readonly springs: MenuSprings = CONFIG.ui.menu) {
+    this.dock = new SoftMount(springs.dock.spring, springs.dock.maxOffset);
+  }
+
   /** Called by the UI whenever the panels have been re-measured at rest. */
   setLayout(dockCenter: Vec2, panels: readonly PanelLayout[]): void {
     this.dockLayout = dockCenter;
     this.layout = [...panels];
     if (this.mounts.length !== panels.length) {
       this.mounts = panels.map(
-        () => new SoftMount(CONFIG.ui.menu.tile.spring, CONFIG.ui.menu.tile.maxOffset),
+        () => new SoftMount(this.springs.tile.spring, this.springs.tile.maxOffset),
       );
     }
   }
 
-  update(frame: PerceptionFrame, cursor: CursorState, aspect: number): MenuMotion {
+  /**
+   * @param canSelect False while the hand is busy with something else - a
+   *   stroke being painted - so a line drawn across the menu lights nothing
+   *   and picks nothing. The panels still swing out of its way.
+   */
+  update(
+    frame: PerceptionFrame,
+    cursor: CursorState,
+    aspect: number,
+    canSelect = true,
+  ): MenuMotion {
     const dt = this.lastT === null ? 0 : (frame.t - this.lastT) / 1000;
     this.lastT = frame.t;
 
@@ -125,15 +151,24 @@ export class MenuPhysics {
       return {
         offset,
         lean: {
-          x: clamp(offset.x / CONFIG.ui.menu.tile.maxOffset, -1, 1),
-          y: clamp(offset.y / CONFIG.ui.menu.tile.maxOffset, -1, 1),
+          x: clamp(offset.x / this.springs.tile.maxOffset, -1, 1),
+          y: clamp(offset.y / this.springs.tile.maxOffset, -1, 1),
         },
         ...revealOf(light, center, rect, aspect),
         rect,
       };
     });
 
-    return { dock: dockOffset, panels, ...this.selection(cursor, panels, frame.t) };
+    return { dock: dockOffset, panels, ...this.selection(cursor, panels, frame.t, canSelect) };
+  }
+
+  /**
+   * Something else picked the hovered panel - a pinch, in Paint mode - so the
+   * dwell that was running on it must not fire as well. It arms again the next
+   * time the cursor arrives on a panel.
+   */
+  consume(): void {
+    if (this.hovered !== null) this.fired = true;
   }
 
   /**
@@ -144,9 +179,10 @@ export class MenuPhysics {
     cursor: CursorState,
     panels: readonly PanelMotion[],
     now: number,
+    canSelect: boolean,
   ): Pick<MenuMotion, "hovered" | "dwell" | "activated"> {
     let target: number | null = null;
-    if (cursor.position !== null) {
+    if (cursor.position !== null && canSelect) {
       for (const [index, panel] of panels.entries()) {
         if (this.layout[index]?.selectable !== true) continue;
         if (contains(panel.rect, cursor.position)) target = index;
@@ -160,7 +196,8 @@ export class MenuPhysics {
     }
     if (target === null) return { hovered: null, dwell: 0, activated: null };
 
-    const dwell = Math.min(1, (now - this.hoveredSince) / CONFIG.cursor.dwellMs);
+    const dwellMs = this.layout[target]?.dwellMs ?? CONFIG.cursor.dwellMs;
+    const dwell = Math.min(1, (now - this.hoveredSince) / dwellMs);
     const activated = dwell >= 1 && !this.fired;
     if (activated) this.fired = true;
     return { hovered: target, dwell, activated: activated ? target : null };

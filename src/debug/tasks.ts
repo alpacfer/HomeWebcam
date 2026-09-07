@@ -260,6 +260,20 @@ export class TaskPanel {
     head.append(title, dismiss);
     element.append(head);
 
+    // A done task keeps its title and gives its space back. It is a list of
+    // things to go and do, and an answered one rendered in full - description,
+    // every step, every run's note and filename - is most of a 1080p panel
+    // spent on work nobody has to do, pushing the open task off the bottom
+    // where the person standing at the station cannot press it. What it
+    // answered is still readable with `npm run task -- show`. See friction 0029.
+    if (task.status === "done") {
+      const answered = document.createElement("p");
+      answered.className = "task__description";
+      answered.textContent = `answered · ${task.steps.length} step(s) · npm run task -- show ${task.id}`;
+      element.append(answered);
+      return element;
+    }
+
     if (task.description !== "") {
       const description = document.createElement("p");
       description.className = "task__description";

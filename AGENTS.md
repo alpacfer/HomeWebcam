@@ -23,7 +23,7 @@ npm run fix          # auto-fix formatting and lint
 npm run station      # ask the live station anything. Start here.
 npm run station -- focus  # required before believing any frame rate
 npm run task         # ask the person at the station to do something on camera
-npm run verify       # drive every interaction through the live station, ~40 s
+npm run verify       # drive every interaction through the live station, ~1 min
 npm run screenshot   # attaches to start.sh's live Chrome when available
 ```
 
@@ -57,17 +57,19 @@ opened. It never launches a browser: `/dev/video0` allows one owner.
 
 | Command | For |
 | --- | --- |
-| `state` | One snapshot: camera (claimed *and* delivered rate), detectors, hands, cursor, mode, phase, every panel's travel, lean, glow and progress, and any words on screen. **Run this before writing any script.** |
+| `state` | One snapshot: view and camera profile, camera (claimed *and* delivered rate), detectors, hands, cursor, mode, phase, every panel's travel, lean, glow and progress, and any words on screen. **Run this before writing any script.** |
+| `camera debug\|final` | Switch the camera profile (720p/60 or the visitor's 1080p/30) without touching what is on the glass. `camera final` from the debug view is how a take is recorded on the camera visitors get; every take before ADR 0021 was 720p. |
+| `view debug\|final` | Put the instruments on the glass or take them off, leaving the camera as it is. |
 | `focus` | Bring the station window to the front, and say whether it took. **Run this before reading any frame rate**: an unfocused window is throttled. |
 | `shoot F --crop menu --zoom 3` | Capture, cropped to a named region and scaled, in one call. Regions: `menu`, `tile`, `countdown`, `status`, `hud`, or `x,y,w,h`. |
 | `watch ".menu.panels[0].glow"` | Poll a snapshot path or expression; reports min/median/max, and can `--shoot-when` a condition fires. |
 | `probe SEL --ring --style a,b` | Geometry, computed styles, and which way a progress arc is *actually* filled, read off the pixels. |
 | `perf --glass` | Frame-rate A/B with CSS overrides. Warns when the window is unfocused, because then it is measuring the throttle. |
-| `puppet wave\|point\|victory\|palm\|both\|stop` | Drive scripted hands into the running app. |
+| `puppet wave\|point\|victory\|palm\|both\|stroke\|sweep\|fist\|overshoot\|part\|dive\|stop` | Drive scripted hands into the running app. `stroke` pinches and draws a line; `sweep` and `fist` cross the same path and must leave nothing; `overshoot` keeps moving while the fingers open wide, so nothing past the parting may be inked; `part` opens them a little and never wide, so the line has to end from the loose limit alone; `dive` closes the fingers *while* travelling, so the head of the line has to be drawn back to where they met. |
 | `record 6 --task latest [--note "..."]` | Answer a task step with scripted hands. Without `--note` the dialog is left for a person. |
 | `say "stop"` | Put words in the station's ear without a microphone. They arrive marked `injected`. |
-| `record 8 [--name "..." --note "..."]` | Record what the models are being given. Without `--name` it leaves the dialog at the station for a person to fill in; `record save --name "..."` and `record discard` finish one that is waiting. |
-| `verify` | All seventeen interaction checks, with screenshots. |
+| `record 8 [--name "..." --note "..."]` | Record what the models are being given, on whichever camera profile is up. Without `--name` it leaves the dialog at the station for a person to fill in; `record save --name "..."` and `record discard` finish one that is waiting. |
+| `verify` | All thirty-four interaction checks, with screenshots. |
 
 Add `--reload` to `state`, `shoot` and `screenshot` to put the station back to
 what a visitor sees first; it keeps whatever state the last person left.
@@ -96,7 +98,7 @@ it explicitly `open` or `contained`.
 
 1. `npm run check` - types, lint, unit tests, friction records, stylesheet rules.
    The DOM lane in `tests/dom/` covers the visitor interface with no station.
-2. `npm run verify` - every interaction, driven by scripted hands, ~30 s.
+2. `npm run verify` - every interaction, driven by scripted hands, ~1 min.
 3. `npm run station -- shoot ... --crop <region>` - the picture for the handoff.
 4. A person in front of the camera - and **only** this last one licenses a claim
    about detection, tracking, gesture recognition or real frame cost. See
@@ -110,7 +112,8 @@ src/
   app.ts                 Frame loop. Wires camera -> perception -> UI.
   camera/camera.ts        getUserMedia, readiness, negotiated-settings readout.
   perception/
-    types.ts             THE CONTRACT. Read this first.
+    types.ts             THE CONTRACT. Read this first. HandObservation.world
+                         is the hand in metres; see ADR 0021 before reading it.
     engine.ts            Runs the detectors, assembles a PerceptionFrame.
     detectors/hands.ts    Hand landmarks + gestures (one MediaPipe pass).
     detectors/faces.ts    Face boxes + stable track ids.
@@ -121,12 +124,18 @@ src/
     tracker.ts           Centroid tracker that assigns face track ids.
     landmarks.ts         Named hand-landmark indices. Never write raw 8 or 12.
   interaction/cursor.ts   Raised hand -> pointer with dwell-to-click.
+  interaction/pinch.ts    Thumb-to-index gap, gated with hysteresis. The paint brush.
+  interaction/painting.ts Strokes as data, and the smooth path through them.
+  interaction/paint-session.ts What a pinch means: paint, pick a chip, or nothing.
   interaction/voice-commands.ts What a sentence means. One command: "stop".
   interaction/soft-mount.ts  Springs and the brush force. No DOM, unit-tested.
   interaction/hand-motion.ts Palm velocity, low-passed, per hand.
   interaction/menu-physics.ts Where the menu is, how lit, and what it has picked.
   ui/                    mirror.ts (video bg), overlay.ts (debug canvas), hud.ts
   ui/experience.ts       The wordless mode menu and the Picture-mode flow.
+  ui/paint-mode.ts       Paint mode on the glass: tray + canvas, driven by the session.
+  ui/paint-tray.ts       The tool chips. The menu again, a third of the size.
+  ui/paint-layer.ts      The canvas the ink lands on. Draws strokes as they grow.
   ui/glass.ts            Rim refraction: canvas displacement map -> SVG filter.
   ui/icons.ts            Phosphor icons, inlined at build time. No network.
   debug/bridge.ts        window.__station: one typed snapshot. Dev builds only.
@@ -139,9 +148,18 @@ src/
   debug/trace.ts         What a take remembers per frame, and the digest a run
                          is read by. Pure; unit-tested.
 scripts/tasks.mjs         Writes and reads tasks. Needs no running station.
+scripts/pinch-corpus.mjs  Distils a recording into a committed pinch take: the
+                          one scalar the gate reads, no image and no identity.
+scripts/pinch-rulers.mjs  Replays the gate on the ratio and on the metric gap
+                          over one take. The tool behind ADR 0021.
+scripts/recover-world.py  Re-runs the hand model over an old recording to get
+                          the world landmarks it did not keep. Needs a Python
+                          venv; the header says which.
 scripts/station.mjs       The debug CLI. Everything asks the station through it.
 scripts/lib/cdp.mjs       The one CDP client. Do not write a second one.
   lib/                   smoothing, fps, assert helpers
+tests/fixtures/pinch-takes/ Real hands, as numbers. What CONFIG.paint.pinch is
+                          answerable to; see ADR 0019 before moving one.
 docs/architecture.md      How the pieces fit and why.
 docs/development-workflow.md Mandatory change and verification loop.
 docs/hardware.md          Real measured camera capabilities. Read before
@@ -265,10 +283,121 @@ These are the traps that cost real time. None are guessable from the code.
 - **A task run says where its hands came from.** `perceptionSource` travels with
   every run, and anything that is not plainly `camera` reads as `unknown` rather
   than as a person. The server keeps that field on purpose; see friction 0020.
-- **A text field steals the station's shortcuts.** `D`, `F`, `P` and `C` are
-  letters, so `app.ts` ignores them while focus is in an input. Any new field
-  must give focus back when it goes away, or the station stops answering its own
-  keyboard. See friction 0018.
+- **A text field steals the station's shortcuts.** `D`, `F`, `P`, `B`, `X` and
+  `C` are letters, so `app.ts` ignores them while focus is in an input. Any new
+  field must give focus back when it goes away, or the station stops answering
+  its own keyboard. See friction 0018.
+- **An `--after` expression does not survive a second shell.** Chaining two
+  `npm run station` calls in one shell string mangles an expression carrying
+  `>` and an arrow function: the wait gets legal JavaScript that is not what was
+  typed, and times out on a condition `state` can read a moment later. Run one
+  station command per shell invocation. See friction 0025.
+- **A hand target cannot be moved by CSS alone.** Hit rectangles for the menu
+  and the paint tray are measured once and cached, and the observers that
+  refresh them see size, never position - so a rule that moves one with `right`
+  or `top` leaves every target where the control used to be. `presentMode()`
+  calls `ExperienceUi.relayout()` because the camera mode is on the body and
+  any rule keyed on it can move things. Move an instrument freely; the browser
+  hit-tests those. See friction 0026.
+- **A pinch is measured, not recognised.** The recognizer has no pinch label;
+  `src/interaction/pinch.ts` divides the thumb-to-index gap by the hand's size
+  and gates it with two thresholds. Every number in `CONFIG.paint.pinch` came
+  off takes at the station and none of it is guessable: contact reads 0.01-0.10
+  and never a stable zero, a relaxed open hand 0.43-0.49, and during a pinch the
+  fingers never left the ratio still ran above 0.24 in runs of up to nine
+  frames. So the two confirmations are different sizes - 180 ms to close, 150 ms
+  to open - and the ink drawn during that long release is taken back afterwards
+  rather than prevented. Lowering `openAbove` to make releasing feel quicker is
+  the trap; it cuts lines.
+- **Those takes are committed, so the gate can be replayed over them.**
+  `tests/fixtures/pinch-takes/` holds one scalar per frame from a real hand,
+  with what the person was asked to do and how many lines that should be, and
+  `npm run check` runs the real gate against them. Do not move a threshold in
+  `CONFIG.paint.pinch` on a reading of a digest: a digest cannot show how long a
+  line waited, which is how `closeBelow` ended up *below* where a real contact
+  reads and lines stopped starting. Read ADR 0019, then run the corpus.
+  `scripts/pinch-corpus.mjs` turns a new recording into a take, and it keeps the
+  trace's own precision because rounding a confidence of 0.6997 to 0.70 crosses
+  a threshold and invents a gesture. See friction 0030.
+- **A line is drawn back to where the fingers met.** The gate cannot confirm a
+  pinch until it has held, and a hand paints at 1.32 screen heights a second, so
+  the head of every line - 220 px at the median, 440 at the ninetieth
+  percentile - used to be missing. `PinchState.contactSince` says when contact
+  began and `PaintSession` replays the points from there. The mirror of the
+  release trim: the end gives ink back, the beginning takes ink on. A pinch that
+  plunges past `deepBelow` also skips most of the wait, which is what stops a
+  one-frame spike over `closeBelow` from resetting the clock forever - that cost
+  a whole line in the vertical-lines take. See ADR 0020.
+- **A line starts on the fingertips and is held on the nearest of three pairs.**
+  `pinchRatio` (thumb tip to index tip) is the only reading that may start a
+  line, because a thumb resting on the side of a pointing index puts the thumb
+  tip 0.07 from the index's middle joint while the tips are 0.21-0.24 apart,
+  and any reading past the tips starts a line there. `pinchHoldRatio` (the
+  closest of tip-tip, tip-DIP and IP-tip) is what keeps one going, because the
+  two tips are the noisiest landmarks the model has and they jumped a held
+  pinch open twice in nine takes; the joints behind them rarely jump at the
+  same time. `PinchGate.update` takes both. The corpus takes carry `hold` for
+  this; a take without it is held on the ratio. See ADR 0022.
+- **Paint mode runs no face pass.** Nothing in it reads a face and the pinch
+  wants the milliseconds; `CONFIG.faces.offWhilePainting` turns the pass off
+  while the glass is a canvas and the HUD reads `faces 0.0ms` there. Face track
+  ids start over when the mode is left. See ADR 0022.
+- **A `Closed_Fist` may keep a line from starting; it never ends one.** With the
+  index curled the thumb rests on it and the gap alone reads as pinched, so the
+  label earns its place on the way in. On the way out it only cuts lines: the
+  recognizer called one deliberately unbroken pinch a fist at full confidence
+  for 238 ms, and every fist label in the corpus is on a hand that was painting
+  on purpose. See ADR 0019.
+- **The pinch ratio glitches hardest while the fingers are shut.** The thumb and
+  index tips are the two noisiest landmarks the model produces. One held pinch
+  jumped from 0.09 to 0.80 for two frames at tracking confidence 1.00, and
+  confidence is no warning: the worse of two line breaks happened at 1.00. Any
+  new reading off those two landmarks needs a confirmation time, not a
+  threshold. See ADR 0018.
+- **The view and the camera profile are two settings.** `D` and `F` set both,
+  `R` swaps the profile alone, and `station camera final` does the same from
+  the CLI. Until ADR 0021 they were one word, so the recorder - an instrument,
+  shown only on the debug view - could only ever record 720p, and every pinch
+  number in `CONFIG` was tuned on a camera visitors never see. A take's manifest
+  says `camera.mode` (the profile) and `camera.view`; read the first before
+  trusting a pixel measurement. The stylesheet is keyed on `data-view`; nothing
+  in it may read `data-camera-mode`.
+- **The pinch's limit is pixels, and every smarter gate was tried.** At two
+  metres a real contact is a 3 px gap against 2-3 px of landmark jitter; median
+  filters, evidence integrators and every threshold pair were replayed over
+  eight takes and none beat the shipped gate without inventing lines. The
+  metric gap off the world landmarks is quieter but biased - 27-30 mm at the
+  median for touching fingertips - and a learned head over all 21 landmarks
+  scored worse still. Before proposing an algorithm, read ADR 0021 and run
+  `scripts/pinch-rulers.mjs` over the take in question.
+- **A digest's `strokes` is the count on the glass, not what the take drew.**
+  The painting survives between takes. `strokesDrawn` is the take's own count
+  and the digest prints both when they differ. See friction 0031.
+- **In Paint mode the pointer is the pinch point, not the index tip.** The menu
+  is driven by it too while the mode is on. A puppet scenario that means "put
+  the ink here" says `anchor: "pinch"`; one that says nothing anchors the index
+  tip, and its pinch point lands a twentieth of the screen lower.
+
+- **Ink flows only while the fingers touch; the line ends later.** `closed` and
+  `touching` on `PinchState` are two different questions. The gate keeps a line
+  open through a landmark glitch on purpose, but `PaintSession` lays no point
+  while `touching` is false: those points are held back and laid only if
+  contact returns, so nothing past a parting reaches the glass and nothing is
+  ever trimmed. And the band between `closeBelow` and `openAbove` has a clock,
+  `looseMs`: fingertips parted a centimetre read 0.22-0.29 for seconds, above
+  contact and below the open mark, and a gate with no clock there held a line
+  for 11 s of a 27 s take. Lowering `openAbove` to fix that is still the trap
+  from ADR 0018. See ADR 0023, and the `loose` fraction in a digest.
+- **Distance changes which reading starts a line, never where the marks are.**
+  Contact reads a ratio of 0.10-0.11 at every hand size, because the ratio is
+  already divided by the hand's size; do not add a distance-scaled threshold.
+  What grows with distance is tip-landmark noise, so a hand smaller than
+  `CONFIG.paint.pinch.farBelow` (a fraction of the frame height, 0.09) starts
+  on the nearest-pair reading instead: 7 of 8 lines at two metres, from 4. Near
+  hands must not, or a thumb resting on a pointing index paints. The corpus
+  carries `size` per frame for this; a fixture without it replays as a near
+  hand. The false side at distance is unmeasured until an idle far take exists.
+  See ADR 0024 and friction 0035.
 
 ## Conventions
 

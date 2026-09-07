@@ -1,6 +1,7 @@
-import type { CameraMode } from "../camera/camera.js";
+import type { CameraMode, StationView } from "../camera/camera.js";
 import { CONFIG } from "../config.js";
 import type { CursorState } from "../interaction/cursor.js";
+import type { PaintStatus } from "../interaction/paint-session.js";
 import type { DetectorTimings } from "../perception/engine.js";
 import type { GestureName, PerceptionFrame, Rect, Vec2 } from "../perception/types.js";
 import type { VoiceStatus } from "../perception/voice.js";
@@ -33,6 +34,8 @@ export interface LoopSnapshot {
   live: boolean;
   voice: VoiceStatus;
   cameraMode: CameraMode;
+  /** What is on the glass, which since ADR 0021 need not match the camera profile. */
+  view: StationView;
   cameraSource: string;
   fps: number;
   capturedFps: number;
@@ -44,12 +47,18 @@ export interface LoopSnapshot {
   crash: string | null;
   frame: PerceptionFrame | null;
   cursor: CursorState | null;
+  /** Paint mode in numbers while it is on. Null otherwise. */
+  paint: PaintStatus | null;
 }
 
 export interface DebugHost {
   loop(): LoopSnapshot;
   /** Tells the ear it heard something, without a microphone. See ADR 0016. */
   say(text: string): void;
+  /** Switches the camera profile, leaving the view alone. See StationView. */
+  requestMode(mode: CameraMode): void;
+  /** Puts the instruments on the glass or takes them off, leaving the camera alone. */
+  setView(view: StationView): void;
   readonly puppet: PuppetController;
   readonly recorder: DebugRecorder;
   readonly tasks: TaskPanel;
@@ -93,6 +102,12 @@ export interface StationSnapshot {
    */
   camera: {
     mode: CameraMode;
+    /**
+     * The view is here beside the profile because they used to be one word.
+     * A take recorded on the visitor's profile reads `mode: "final", view:
+     * "debug"`, and that pairing is the whole point of ADR 0021.
+     */
+    view: StationView;
     source: string;
     fps: number;
     capturedFps: number;
@@ -124,6 +139,22 @@ export interface StationSnapshot {
   experience: { mode: string; phase: string };
   menu: { dock: Vec2; panels: PanelSnapshot[] };
   picture: { countdown: number; countdownVisible: boolean; statusVisible: boolean };
+  /**
+   * Paint mode. `visible` is what the browser computed for the canvas, not what
+   * the app believes about it (friction 0019); `tray` is read off the chips the
+   * same way the menu is read off the tiles.
+   */
+  paint: {
+    visible: boolean;
+    /**
+     * The canvas's pixel size. A visible canvas that is 0 by 0 draws nothing
+     * and says nothing about it; every stroke lands in an empty buffer while the
+     * stroke count climbs. See friction 0023.
+     */
+    canvas: { width: number; height: number };
+    status: PaintStatus | null;
+    tray: PanelSnapshot[];
+  };
   /** The debug video recorder. Only reachable in debug camera mode. See ADR 0014. */
   recording: RecorderState;
   /** What the station has been asked to do in front of the camera. See ADR 0015. */
@@ -170,6 +201,23 @@ export interface StationBridge {
    * that passes this way can never be quoted as the speech model working.
    */
   say(text: string): void;
+  /**
+   * The two halves of what D and F used to do together. `camera.use` changes
+   * what the camera delivers and nothing on the glass; `view.set` the reverse.
+   * The CLI's `camera final` is how a take on the visitor's profile is recorded
+   * from the debug view. See StationView and ADR 0021.
+   */
+  camera: { use(mode: CameraMode): void };
+  view: { set(view: StationView): void };
+  /**
+   * The painting's pixels, because a check that reads the stroke count reads a
+   * number the app also wrote. `painted` counts pixels with any alpha;
+   * `sample` reads one, at normalized coordinates, as [r, g, b, a].
+   */
+  paint: {
+    painted(): number;
+    sample(x: number, y: number): [number, number, number, number];
+  };
 }
 
 declare global {
@@ -219,9 +267,40 @@ export function installDebugBridge(host: DebugHost): void {
       record: (taskId, stepId) => host.tasks.recordStep(taskId, stepId),
     },
     say: (text) => host.say(text),
+    camera: { use: (mode) => host.requestMode(mode) },
+    view: { set: (view) => host.setView(view) },
+    paint: {
+      painted: () => countPainted(),
+      sample: (x, y) => samplePaint(x, y),
+    },
   };
   window.__station = bridge;
   markSource("camera");
+}
+
+function paintCanvas(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } | null {
+  const canvas = document.getElementById("paint");
+  if (!(canvas instanceof HTMLCanvasElement)) return null;
+  const ctx = canvas.getContext("2d");
+  return ctx === null ? null : { canvas, ctx };
+}
+
+function countPainted(): number {
+  const target = paintCanvas();
+  if (target === null) return 0;
+  const { data } = target.ctx.getImageData(0, 0, target.canvas.width, target.canvas.height);
+  let painted = 0;
+  for (let i = 3; i < data.length; i += 4) if ((data[i] ?? 0) > 0) painted++;
+  return painted;
+}
+
+function samplePaint(x: number, y: number): [number, number, number, number] {
+  const target = paintCanvas();
+  if (target === null) return [0, 0, 0, 0];
+  const px = Math.min(target.canvas.width - 1, Math.max(0, Math.round(x * target.canvas.width)));
+  const py = Math.min(target.canvas.height - 1, Math.max(0, Math.round(y * target.canvas.height)));
+  const { data } = target.ctx.getImageData(px, py, 1, 1);
+  return [data[0] ?? 0, data[1] ?? 0, data[2] ?? 0, data[3] ?? 0];
 }
 
 /**
@@ -259,6 +338,7 @@ function snapshot(host: DebugHost): StationSnapshot {
     perceptionSource: host.puppet.active ? "puppet" : "camera",
     camera: {
       mode: loop.cameraMode,
+      view: loop.view,
       source: loop.cameraSource,
       fps: loop.fps,
       capturedFps: loop.capturedFps,
@@ -284,6 +364,7 @@ function snapshot(host: DebugHost): StationSnapshot {
       phase: document.body.dataset.picturePhase ?? "unknown",
     },
     menu: readMenu(),
+    paint: readPaint(loop.paint),
     picture: readPicture(),
     recording: host.recorder.state,
     tasks: host.tasks.state,
@@ -300,31 +381,52 @@ function snapshot(host: DebugHost): StationSnapshot {
  * from the physics would agree with itself even if the renderer dropped a write.
  */
 function readMenu(): StationSnapshot["menu"] {
+  const dock = document.getElementById("dock");
+  return {
+    dock: dock === null ? { x: 0, y: 0 } : translationOf(dock),
+    panels: readPanels(".tile", "mode", ".tile__ring"),
+  };
+}
+
+function readPaint(status: PaintStatus | null): StationSnapshot["paint"] {
+  const canvas = document.getElementById("paint");
+  return {
+    visible: canvas !== null && getComputedStyle(canvas).display !== "none",
+    canvas:
+      canvas instanceof HTMLCanvasElement
+        ? { width: canvas.width, height: canvas.height }
+        : { width: 0, height: 0 },
+    status,
+    tray: readPanels(".chip", "chip", ".chip__ring"),
+  };
+}
+
+/** Tiles and chips are read the same way: the renderer wrote these, so they are what is on the glass. */
+function readPanels(selector: string, idKey: string, ringSelector: string): PanelSnapshot[] {
   const panels: PanelSnapshot[] = [];
-  for (const tile of document.querySelectorAll(".tile")) {
-    if (!(tile instanceof HTMLElement)) continue;
-    const box = tile.getBoundingClientRect();
+  for (const panel of document.querySelectorAll(selector)) {
+    if (!(panel instanceof HTMLElement)) continue;
+    const box = panel.getBoundingClientRect();
     panels.push({
-      id: tile.dataset.mode ?? "?",
+      id: panel.dataset[idKey] ?? "?",
       rect: {
         x: box.left / window.innerWidth,
         y: box.top / window.innerHeight,
         width: box.width / window.innerWidth,
         height: box.height / window.innerHeight,
       },
-      offset: translationOf(tile),
-      leanDeg: rotationOf(tile),
-      glow: numberProperty(tile, "--glow"),
-      dwell: ringProgress(tile.querySelector(".tile__ring")),
+      offset: translationOf(panel),
+      leanDeg: rotationOf(panel),
+      glow: numberProperty(panel, "--glow"),
+      dwell: ringProgress(panel.querySelector(ringSelector)),
       hold:
-        tile.querySelector(".tile__hint .ring") === null
+        panel.querySelector(".tile__hint .ring") === null
           ? null
-          : ringProgress(tile.querySelector(".tile__hint .ring")),
-      classes: [...tile.classList],
+          : ringProgress(panel.querySelector(".tile__hint .ring")),
+      classes: [...panel.classList],
     });
   }
-  const dock = document.getElementById("dock");
-  return { dock: dock === null ? { x: 0, y: 0 } : translationOf(dock), panels };
+  return panels;
 }
 
 function readPicture(): StationSnapshot["picture"] {

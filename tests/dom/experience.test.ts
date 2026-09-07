@@ -74,7 +74,7 @@ describe("ExperienceUi", () => {
       expect(tile.querySelector(".tile__icon svg")).not.toBeNull();
       expect(tile.getAttribute("aria-label")).toBeTruthy();
     }
-    expect(tiles.map((t) => (t as HTMLElement).dataset.mode)).toEqual(["picture", "game"]);
+    expect(tiles.map((t) => (t as HTMLElement).dataset.mode)).toEqual(["picture", "paint"]);
   });
 
   it("puts no words on the screen", () => {
@@ -90,11 +90,13 @@ describe("ExperienceUi", () => {
     expect(visible).toEqual([]);
   });
 
-  it("locks the mode that has nothing behind it yet", () => {
+  it("leaves no mode locked: both tiles can be chosen", () => {
     build();
-    const game = document.querySelector('[data-mode="game"]');
-    expect(game?.classList.contains("tile--locked")).toBe(true);
-    expect((game as HTMLButtonElement).disabled).toBe(true);
+    for (const tile of document.querySelectorAll(".tile")) {
+      expect(tile.classList.contains("tile--locked")).toBe(false);
+      expect((tile as HTMLButtonElement).disabled).toBe(false);
+      expect(tile.getAttribute("aria-pressed")).toBe("false");
+    }
   });
 
   it("opens Picture mode from a held Victory, and not before the hold is done", () => {

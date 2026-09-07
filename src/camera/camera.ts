@@ -2,6 +2,17 @@ import { CONFIG } from "../config.js";
 
 export type CameraMode = keyof typeof CONFIG.camera.modes;
 
+/**
+ * What the station is showing, as distinct from what the camera is doing.
+ *
+ * Until ADR 0021 the two were one setting: D meant the debug surface *and* the
+ * 720p/60 camera profile, F the visitor's glass *and* 1080p/30. So the recorder,
+ * which lives on the debug surface, could only ever record the 720p profile,
+ * and the resolution visitors actually get was never once measured. They are
+ * separate now: D and F still set both, R swaps the profile on its own.
+ */
+export type StationView = "debug" | "final";
+
 type CameraCapabilities = MediaTrackCapabilities & {
   exposureMode?: string[];
   focusMode?: string[];

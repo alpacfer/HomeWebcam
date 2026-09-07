@@ -3,8 +3,11 @@
 /** Named indices into HandObservation.landmarks (MediaPipe's 21-point hand). */
 export const HAND = {
   WRIST: 0,
+  /** The thumb's last joint before the tip. With INDEX_DIP, what a pinch is held on. */
+  THUMB_IP: 3,
   THUMB_TIP: 4,
   INDEX_MCP: 5,
+  INDEX_DIP: 7,
   INDEX_TIP: 8,
   MIDDLE_MCP: 9,
   MIDDLE_TIP: 12,

@@ -51,12 +51,30 @@ export const CONFIG = {
     maxHands: 1,
     minDetectionConfidence: 0.5,
     minTrackingConfidence: 0.5,
+    /**
+     * Where the hand models run. "GPU" is WebGL on the station's Intel
+     * integrated graphics; "CPU" is XNNPACK over WASM. Measured at the station
+     * on 2026-09-07, window focused, no hand in frame, 1080p profile: GPU
+     * 15.3-18.2 ms a pass, CPU 29.4-29.5 ms. The CPU path computes slightly
+     * better numbers - the GPU runs at half precision, and on identical frames
+     * its landmarks jittered 10-15% more - but the pinch wants every camera
+     * frame far more than it wants that (see ADR 0022), and the CPU cannot
+     * deliver even half of them. GPU, until the hardware changes.
+     */
+    delegate: "GPU" as "GPU" | "CPU",
     /** Flip if left/right read backwards at the station. See detectors/hands.ts. */
     swapHandedness: false,
   },
 
   faces: {
     enabled: true,
+    /**
+     * Not while painting. Nothing in Paint mode reads a face, the pinch is the
+     * hardest thing this station measures, and the face pass cost 4-7 ms on
+     * every other frame beside it. Faces come back the moment the mode is
+     * left; the tracker's ids start over then. See ADR 0022.
+     */
+    offWhilePainting: true,
     /**
      * Run the face pass every Nth camera frame. 2 halves its cost and still
      * updates at 15 Hz on the station's 30 fps camera, far more than a head
@@ -179,6 +197,283 @@ export const CONFIG = {
   picture: {
     countdownMs: 3000,
     savedMessageMs: 2600,
+  },
+
+  /**
+   * Paint mode: pinch thumb and index to draw on the mirror. Everything is
+   * driven by one hand; the pointer is the midpoint of the two fingertips,
+   * because it is the one point that does not jump when the fingers meet.
+   * See docs/adr/0017-pinch-to-paint.md. Every number here wants a hand in
+   * front of the real camera: verify at the station.
+   */
+  paint: {
+    pinch: {
+      /**
+       * Thumb tip to index tip, as a fraction of the hand's own size (the
+       * larger of palm length and palm width), so the same pinch reads the same
+       * at one metre and at three. Below this the fingers count as pinched.
+       *
+       * 0.18, and the earlier 0.12 was the single worst number in this file:
+       * it sat *below* where a real hand's contact reads, so lines would not
+       * start. Replaying the takes in tests/fixtures/pinch-takes, the person
+       * holding one pinch waited 826 ms for their line to begin and the worst
+       * of the three shapes 369 ms; at 0.18 those are 234 ms and 212 ms, which
+       * is the 180 ms confirmation plus a frame or two. Their fingers routinely
+       * sat at 0.13-0.16 while plainly touching, which 0.12 called open.
+       *
+       * The mark can move up this far because the level was never what
+       * separated a deliberate pinch from an accident - the duration was. In
+       * the take where nothing was meant to be drawn, the ratio never stayed
+       * under 0.18 for longer than 98 ms; in the takes that meant it, every
+       * line held for hundreds. So closeMs does the discriminating and this
+       * only has to be above a real contact. See ADR 0019.
+       */
+      closeBelow: 0.18,
+      /**
+       * Above this the fingers count as open again. The gap between the two is
+       * hysteresis: a pinch hovering on one threshold would otherwise flicker
+       * and chop a line into dots.
+       *
+       * Deliberately far above closeBelow, and lowering it would be a mistake.
+       * A thirty-second take of one deliberately unbroken pinch put the ratio
+       * above 0.24 in runs of up to nine frames while the fingers never parted,
+       * so a mark down there would have cut that line repeatedly. The
+       * stickiness this number seems to cause is dealt with elsewhere: ink
+       * stops the frame the fingers leave contact, and the band below this
+       * mark has a clock, `looseMs`, so a pinch cannot live in it.
+       * See docs/adr/0018-paint-releases-on-contact.md and ADR 0023.
+       */
+      openAbove: 0.32,
+      /**
+       * How long a change has to hold before it counts, in each direction.
+       *
+       * Asymmetric, because the two mistakes are not the same size. A line
+       * that starts by itself has to be erased, so closing is checked for long
+       * enough to outlast every accidental dip in the take where nothing was
+       * meant to be drawn: the longest of those ran 98 ms, so 180 ms clears it
+       * by 82 ms and still starts a deliberate line inside a fifth of a second.
+       * This is the threshold's other half - see closeBelow, which can only
+       * afford to sit above a real contact because this number is doing the
+       * discriminating.
+       *
+       * Opening is checked for far longer, because the thumb and index tips are
+       * the noisiest landmarks the model has and they glitch while the fingers
+       * are still shut. In one continuous pinch the ratio jumped from 0.09 to
+       * 0.80 for two frames at full tracking confidence, and elsewhere drifted
+       * over 0.32 for two more as confidence fell to 0.52; each of those broke
+       * the line. 150 ms rides out every glitch in that take and leaves the two
+       * genuine releases, which ran 13 and 25 frames.
+       *
+       * A slow release would normally read as a line that will not stop. It
+       * does not here, because the ink it lays down is taken back again.
+       */
+      closeMs: 180,
+      openMs: 150,
+      /**
+       * The fast way in. A pinch this tight is not something a hand does by
+       * accident, so it does not have to wait for the full `closeMs`.
+       *
+       * The two takes where nothing was meant to be drawn dip under 0.12
+       * thirteen times between them and never stay there for 50 ms; a
+       * deliberate pinch arrives there within a frame or two of crossing 0.18.
+       * Replayed over the corpus, 0.12 draws no false line at any confirmation
+       * from 40 ms up, so 80 ms - three frames at the station's rate - is
+       * double the shortest value that passes rather than a value on an edge.
+       * 0.14 is on that edge: at 40 ms it invents a line.
+       *
+       * What it buys is the vertical-lines take, where a whole line went
+       * missing. The person pinched, drew the full height of the screen and
+       * got nothing, because the ratio spiked over 0.18 for one frame every
+       * 100 ms or so and each spike restarted the 180 ms clock from zero. The
+       * deep path never restarted: they were under 0.12 the whole time. It
+       * takes that take from 9 lines to 10 and its worst wait from 438 ms to
+       * 211 ms. See ADR 0020.
+       */
+      deepBelow: 0.12,
+      deepMs: 80,
+      /**
+       * A hand the tracker loses for less than this keeps its stroke; when it
+       * comes back the line continues.
+       *
+       * 200 ms sits in an empty gap. Across the six paint takes the detector
+       * dropped the hand 39 times, and the lengths are in two clumps with
+       * nothing between them: 28 glitches of 48 ms median and none over 120 ms,
+       * and 11 real departures of 300 ms and up, none of them mid-line. So
+       * anything from 120 to 300 ms behaves identically on the evidence, and
+       * the middle of that gap is the value least likely to be wrong in either
+       * direction. See ADR 0019.
+       */
+      lostGraceMs: 200,
+      /**
+       * How long a pinch may sit between `closeBelow` and `openAbove` before it
+       * is over.
+       *
+       * The band between the two marks is hysteresis, and it had no clock: a
+       * pinch that opened past 0.18 and stopped short of 0.32 was held for as
+       * long as it stayed there. Fingertips parted a centimetre read exactly
+       * there - 0.22-0.29 for seconds at a time in the parted-slightly take, on
+       * the nearest-pair reading as much as on the tips - so the line ran on
+       * until the hand opened wide: 11.5 s of ink with the fingers apart in a
+       * 27 s take, and a release 2.6 s late at the median.
+       *
+       * 400 ms is the shortest limit that cuts no line in the corpus. A held
+       * pinch does stray into the band: the nearest-pair reading sat above 0.18
+       * for up to 178 ms in the twenty-second pinch and 173 ms in the other
+       * continuous take, and once each for 351 and 387 ms in two takes whose
+       * video is too blurred to say whether the fingers had parted. At 300 ms
+       * those two lines break; at 400 every count in the corpus holds. The one
+       * take it does shorten is the fast, close, blurred continuous take, at
+       * two points where the reading stayed above contact for 550-750 ms.
+       *
+       * This decides when a *line* ends, not when the ink stops. Ink is held
+       * back the frame the fingers leave contact (PaintSession), so the limit
+       * can afford to be slow. See ADR 0023.
+       */
+      looseMs: 400,
+      /**
+       * A hand smaller than this - its size as a fraction of the frame height,
+       * the larger of palm length and palm width - is far, and may start a line
+       * on the nearest-pair reading rather than on the tips.
+       *
+       * Distance does not move where contact reads: the ratio is divided by
+       * the hand's own size, and across every take a touching pinch reads a
+       * median of 0.10-0.11 from 70 px hands up. What distance does is make
+       * the two tip landmarks noisier, until at two metres they pop over
+       * `closeBelow` every few frames of a real pinch and no confirmation ever
+       * completes. In the two-metre take (palm 0.05-0.08 of the frame) the
+       * tips gave 4 of 8 lines and the nearest-pair reading gives 7: in the
+       * missed pinches it sat at 0.00-0.09 while the tips read 0.2. Starting on
+       * it at *every* size invents two lines in a near idle take - the thumb
+       * resting on the side of a pointing index reads as contact there
+       * (ADR 0022) - so the rule is gated by size.
+       *
+       * 0.09 sits in an empty gap: the far take's palm never exceeds 0.080 and
+       * no near take's drops under 0.101, so anything between behaves the same
+       * on the corpus and the middle is the value least likely to be wrong in
+       * either direction. Halve the pixel count in your head on the 1080p
+       * profile: this is a fraction of the frame, not a pixel size, and the
+       * corpus is 720p.
+       *
+       * Unmeasured: whether a far hand that means nothing starts lines on this
+       * reading. No idle take exists at two metres; a task asks for one. Verify
+       * at the station. See ADR 0024.
+       */
+      farBelow: 0.09,
+
+      /**
+       * Which measurement the gate reads.
+       *
+       * "ratio" is the thumb-to-index gap over the hand's own size, off the 2D
+       * landmarks: every number above was tuned on it and every committed take
+       * carries it. "metres" is the same gap in MediaPipe's world landmarks,
+       * which the detector was throwing away until ADR 0021: a distance in
+       * metres that needs no hand size to normalise it, and that has depth, so
+       * two fingertips that only line up from the camera's point of view do not
+       * read as touching.
+       *
+       * The ratio stays the default because the metric gap was measured and
+       * lost. World landmarks were recovered for nine takes by re-running the
+       * same model over the video: while the ratio gate held a real pinch, the
+       * 3D gap read 27-30 mm at the median and 56 mm at the ninetieth
+       * percentile, for two fingertips that were touching the whole time, and
+       * an idle hand meaning nothing dipped to 13 mm and stayed under 25 mm for
+       * 372 ms. The depth MediaPipe lifts from one image is too rough for a
+       * centimetre, and a noisy z can only make a distance longer. No metric
+       * mark drew fewer than two lines nobody meant. The switch stays so the
+       * question can be asked again on the 1080p profile, which no take has
+       * covered; `pinchMetres` travels in every trace either way. See ADR 0021.
+       */
+      measure: "ratio" as "ratio" | "metres",
+      /**
+       * The three marks for the metric gap, in metres, standing in for
+       * closeBelow, openAbove and deepBelow when `measure` is "metres". The
+       * confirmation times and the grace period are shared.
+       *
+       * Not tuned, because nothing tuned them into working: over the recovered
+       * takes every pair from 20/40 to 50/75 mm either missed most lines or
+       * invented some. These are the middle of the held-pinch distribution and
+       * the open one, so a metric take reads sensibly on the HUD. Verify at the
+       * station before ever switching `measure` to "metres".
+       */
+      metres: { closeBelow: 0.03, openAbove: 0.05, deepBelow: 0.02 },
+    },
+
+    /**
+     * The brush point is smoothed with its own 1€ filter and no prediction.
+     * Prediction overshoots at every reversal, which on a cursor is a wobble
+     * and on a line is a hook drawn at every corner. The floor is lower than
+     * the cursor's because a line shows jitter that a ring hides.
+     */
+    filter: {
+      minCutoffHz: 2,
+      beta: 25,
+      derivativeCutoffHz: 1,
+      predictionCutoffHz: 6,
+    },
+
+    /**
+     * How far back a line may be drawn from when it is confirmed.
+     *
+     * The one correction a line still gets after the fact. A gate cannot
+     * know a pinch has begun until it has held, so by the time a line is
+     * certain the hand has been drawing it for a confirmation already - and at
+     * the speed a person actually paints, 1.32 screen heights a second at the
+     * median and 2.65 at the ninetieth percentile, that is 220 to 440 px of
+     * line missing from the top of every stroke. That is what "it takes a
+     * while to start detecting the line" is: not only a wait, but a line whose
+     * beginning was cut off.
+     *
+     * So the stroke is begun where the fingers met rather than where the hand
+     * had got to, replaying the points in between. It appears late and it
+     * appears whole.
+     *
+     * 240 ms is a guard rather than a shape. The gate cannot be more than
+     * `closeMs` plus the frame that carries it behind the moment the fingers
+     * met - a pending close either fires at 180 ms or is reset - so in the
+     * ordinary case this never bites. Setting it *at* closeMs did bite, shaving
+     * the last frame off the head of every line that took the slow way in.
+     * See docs/adr/0020-a-line-starts-where-the-fingers-met.md.
+     */
+    startBackdateMs: 240,
+
+    /**
+     * The brush has to travel this far, in screen heights, before a new point
+     * is added to the stroke. Points closer than this are jitter, not a line,
+     * and dropping them is most of what makes the line look drawn by hand.
+     * About 3 px on the 1080p station.
+     */
+    minSegment: 0.003,
+
+    /**
+     * The palette. Six, bright enough to read over a lit hallway wall and a
+     * dark jacket alike. Black is not here: over a hallway at night it is a hole.
+     */
+    colors: ["#ffffff", "#ffd84d", "#ff6b5c", "#97eeda", "#5cb8ff", "#ff66c4"],
+    defaultColor: 3,
+
+    /** Line widths in screen heights: 9, 19 and 43 px on the 1080p station. */
+    sizes: [0.008, 0.018, 0.04],
+    defaultSize: 1,
+
+    /** The eraser is this many times the chosen width; erasing at 9 px is a chore. */
+    eraserScale: 2,
+
+    /**
+     * Holding on the bin for this long clears everything. Twice the ordinary
+     * dwell, because there is no undo, and a hand resting there by accident
+     * gets a whole second of a ring filling to move away from.
+     */
+    clearDwellMs: 1600,
+
+    /**
+     * The tool tray is the same glass as the menu and hangs on the same kind of
+     * spring, but the chips are a third of the size of a tile and sit closer
+     * together, so they travel a third as far before they would overlap.
+     */
+    tray: {
+      dock: { spring: { damping: 0.75, stiffness: 190 }, maxOffset: 0.008 },
+      tile: { spring: { damping: 0.6, stiffness: 340 }, maxOffset: 0.012 },
+    },
   },
 
   /**

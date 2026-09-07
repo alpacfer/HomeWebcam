@@ -1,9 +1,11 @@
 import checkCircle from "@phosphor-icons/core/assets/fill/check-circle-fill.svg?raw";
 import warning from "@phosphor-icons/core/assets/fill/warning-fill.svg?raw";
 import camera from "@phosphor-icons/core/assets/light/camera-light.svg?raw";
-import gameController from "@phosphor-icons/core/assets/light/game-controller-light.svg?raw";
+import eraser from "@phosphor-icons/core/assets/light/eraser-light.svg?raw";
 import handPalm from "@phosphor-icons/core/assets/light/hand-palm-light.svg?raw";
 import handPeace from "@phosphor-icons/core/assets/light/hand-peace-light.svg?raw";
+import paintBrush from "@phosphor-icons/core/assets/light/paint-brush-light.svg?raw";
+import trash from "@phosphor-icons/core/assets/light/trash-light.svg?raw";
 
 /**
  * Phosphor Icons (MIT), inlined from the package at build time.
@@ -12,7 +14,8 @@ import handPeace from "@phosphor-icons/core/assets/light/hand-peace-light.svg?ra
  * in it: every affordance is carried by its icon, and an icon family that was
  * designed together is the only way two of them read as the same voice. It also
  * has the two gestures the station actually teaches - hand-peace and hand-palm -
- * which is rare, and worth more than a smaller download.
+ * which is rare, and worth more than a smaller download. It has no pinch; the
+ * brush cursor teaches that one by showing the two fingertips closing on it.
  *
  * `?raw` keeps them on-device: the SVG source is inlined into the bundle, so
  * nothing is fetched at runtime. See docs/adr/0010-reactive-glass-menu.md.
@@ -23,7 +26,9 @@ import handPeace from "@phosphor-icons/core/assets/light/hand-peace-light.svg?ra
  */
 export const ICON = {
   camera,
-  gameController,
+  paintBrush,
+  eraser,
+  trash,
   handPalm,
   handPeace,
   checkCircle,

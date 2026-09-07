@@ -45,6 +45,19 @@ friction; the mandatory end-of-task review in `docs/development-workflow.md` is 
 | [0020. A run lost where its hands came from](0020-a-run-lost-where-its-hands-came-from.md) | integrated | The server keeps a run's provenance, calls a lost one `unknown`, and a test pins it. |
 | [0021. A model that would not load blamed the wrong thing](0021-a-model-that-would-not-load-blamed-the-wrong-thing.md) | integrated | Local assets 404 with their path, and every miss is listed at `/api/missing`. |
 | [0022. A covered window read as a slow station](0022-a-covered-window-read-as-a-slow-station.md) | integrated | The snapshot carries time since the last frame; `state` says the rates are stale. |
+| [0023. A canvas sized while hidden had no pixels](0023-a-canvas-sized-while-hidden-had-no-pixels.md) | integrated | The paint canvas is sized when shown; the snapshot carries its size and `state` and `verify` fail a 0x0 canvas. |
+| [0024. The tool tray hid under the task list](0024-the-tool-tray-hid-under-the-task-list.md) | integrated | The tray steps inboard in the debug view; `verify` reads both rectangles and fails an overlap. |
+| [0025. `shoot --after` timed out on a dwell that `state` could read](0025-shoot-after-timed-out-on-a-dwell-state-could-read.md) | integrated | The expression was mangled by chaining two station commands in one shell string; run one per shell. |
+| [0026. A tray that moved without being measured](0026-a-tray-that-moved-without-being-measured.md) | integrated | 0024 moved a hand target and left its cached hit rectangles behind; the list moves instead, and `verify` hovers a chip in both camera modes. |
+| [0027. A puppet leg stopped outlasting the gate it tripped](0027-a-puppet-leg-stopped-outlasting-the-gate-it-tripped.md) | integrated | A literal 200 ms scenario leg went short when the release confirmation grew; paint legs derive from the gate and a unit test holds them there. |
+| [0028. Thresholds tuned by eye from a digest](0028-thresholds-tuned-by-eye-from-a-digest.md) | integrated | A digest cannot show how long a line waited; takes are distilled into a committed corpus and the real gate is replayed over them in `npm run check`. |
+| [0029. A done task pushed the open one off the screen](0029-a-done-task-pushed-the-open-one-off-the-screen.md) | integrated | An answered task rendered in full cost 700 px of the panel; done tasks collapse to a title and a DOM test holds the open one's steps on screen. |
+| [0030. A fixture that rounded through a threshold](0030-a-fixture-that-rounded-through-a-threshold.md) | integrated | Confidence rounded to 2 places crossed the gesture threshold and invented a fist; the distiller keeps the trace's own precision. |
+| [0031](0031-a-digest-counted-lines-that-were-already-there.md) | integrated | `strokesDrawn` in the digest, printed as "N line(s) drawn, M on the glass" |
+| [0032](0032-every-take-was-recorded-on-the-wrong-camera-profile.md) | integrated | View and camera profile split; `station camera final`; a verify check records on the visitor profile |
+| [0033](0033-the-debug-profile-starves-the-hand-tracker.md) | integrated | Paint takes go on the visitor profile, which processes every frame; the stride series is in ADR 0022 |
+| [0034](0034-a-hysteresis-band-with-no-clock.md) | integrated | Ink is held back the frame the fingers part and the band between the marks has a clock; the take is in the corpus and the digest reports `loose` |
+| [0035](0035-no-idle-take-at-distance.md) | contained | A far hand starts on the joints, gated by size; the idle take at two metres that would test the false side is requested, not recorded |
 
 ## Record template
 

@@ -32,6 +32,7 @@ function frame(t: number, hands: Vec2[] = []): PerceptionFrame {
       (palmCenter, i): HandObservation => ({
         side: i === 0 ? "right" : "left",
         landmarks: [],
+        world: [],
         indexTip: palmCenter,
         palmCenter,
         gesture: "None",
@@ -106,6 +107,48 @@ describe("MenuPhysics", () => {
     expect(done.activated).toBe(0);
     const after = menu.update(frame(CONFIG.cursor.dwellMs + 40), cursorAt(inside), ASPECT);
     expect(after.activated).toBeNull();
+  });
+
+  it("waits longer on a panel that asks for it", () => {
+    const menu = new MenuPhysics();
+    const [first, second] = layout();
+    if (first === undefined || second === undefined) throw new Error("no layout");
+    menu.setLayout({ x: 0.875, y: 0.12 }, [first, { ...second, selectable: true, dwellMs: 2000 }]);
+    const inside = { x: 0.54, y: 0.09 };
+    menu.update(frame(0), cursorAt(inside), ASPECT);
+    const ordinary = menu.update(frame(CONFIG.cursor.dwellMs + 20), cursorAt(inside), ASPECT);
+    expect(ordinary.activated).toBeNull();
+    expect(ordinary.dwell).toBeCloseTo((CONFIG.cursor.dwellMs + 20) / 2000, 2);
+    expect(menu.update(frame(2020), cursorAt(inside), ASPECT).activated).toBe(1);
+  });
+
+  it("hovers nothing while selection is off, and starts fresh when it returns", () => {
+    const menu = physics();
+    const inside = { x: 0.44, y: 0.09 };
+    menu.update(frame(0), cursorAt(inside), ASPECT, false);
+    const busy = menu.update(frame(CONFIG.cursor.dwellMs * 2), cursorAt(inside), ASPECT, false);
+    expect(busy.hovered).toBeNull();
+    expect(busy.activated).toBeNull();
+    // The light still follows the hand; only the choosing is suspended.
+    expect(busy.panels[0]?.glow ?? 0).toBeGreaterThan(0);
+    const back = menu.update(frame(CONFIG.cursor.dwellMs * 2 + 16), cursorAt(inside), ASPECT);
+    expect(back.hovered).toBe(0);
+    expect(back.dwell).toBeCloseTo(0, 2);
+  });
+
+  it("does not fire a dwell that something else has already consumed", () => {
+    const menu = physics();
+    const inside = { x: 0.44, y: 0.09 };
+    menu.update(frame(0), cursorAt(inside), ASPECT);
+    menu.consume();
+    const later = menu.update(frame(CONFIG.cursor.dwellMs * 2), cursorAt(inside), ASPECT);
+    expect(later.hovered).toBe(0);
+    expect(later.activated).toBeNull();
+    // Leaving and coming back arms it again.
+    menu.update(frame(CONFIG.cursor.dwellMs * 2 + 16), cursorAt({ x: 0.9, y: 0.9 }), ASPECT);
+    menu.update(frame(CONFIG.cursor.dwellMs * 2 + 32), cursorAt(inside), ASPECT);
+    const again = menu.update(frame(CONFIG.cursor.dwellMs * 3 + 64), cursorAt(inside), ASPECT);
+    expect(again.activated).toBe(0);
   });
 
   it("never selects a locked panel", () => {

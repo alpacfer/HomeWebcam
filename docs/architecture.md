@@ -83,11 +83,16 @@ halves - `scripts/tasks.mjs` writes them with no station running, the station ap
 produced. See [ADR 0015](adr/0015-camera-tasks.md).
 
 `recorder.ts` is the exception to the gate. It records the camera stream the detectors are reading,
-alongside a per-frame trace of what they made of it, and it is reachable from debug camera mode in
-any build the station runs - the same position the picture flow is in, and for the same reason: both
+alongside a per-frame trace of what they made of it, and it is reachable from the debug view in any
+build the station runs - the same position the picture flow is in, and for the same reason: both
 write through a localhost endpoint that exists wherever the station's own server does. It is the one
-piece of `src/debug/` a person operates by hand, which is why debug mode is also the one mode with a
-mouse pointer. See [ADR 0014](adr/0014-debug-recordings.md).
+piece of `src/debug/` a person operates by hand, which is why the debug view is also the one view
+with a mouse pointer. See [ADR 0014](adr/0014-debug-recordings.md).
+
+The view and the camera profile are separate settings (`StationView` and `CameraMode` in
+`src/camera/camera.ts`). They used to be one, which meant the recorder could only ever see the
+720p/60 profile and the 1080p/30 a visitor gets was never recorded. `D` and `F` still set both; `R`
+and `station camera` change the profile alone. See [ADR 0021](adr/0021-the-pinch-is-limited-by-pixels.md).
 
 ## The ear
 
@@ -143,3 +148,46 @@ it as well, so a radius is round rather than an ellipse on a 16:9 screen. `Perce
 coordinates are converted on the way in and offsets are multiplied back out by the viewport height
 on the way to CSS. This is the only place in the codebase that uses anything but the normalized
 mirrored space of [ADR 0004](adr/0004-mirrored-screen-space.md), and it never leaves the menu.
+
+## Paint mode
+
+The second mode. A pinch is a sense built out of the perception contract the way the cursor is:
+`interaction/pinch.ts` measures the thumb-to-index gap against the hand's own size and gates it, and
+`interaction/paint-session.ts` decides what a pinch means - paint, pick the chip under it, or
+nothing - given what the menus say the pointer is over. Strokes are data in `interaction/painting.ts`,
+normalized, with the smooth path through them as a pure function.
+
+Ink flows only while the fingers are together. The gate takes its time to call
+a line over, because a landmark glitch must not cut one, but nothing it is
+unsure about reaches the glass: the points a hand travels through while the
+fingers are apart are held back by the session, laid down only if contact
+returns inside the gate's patience, and dropped otherwise. The band between the
+gate's two marks has a clock of its own, so fingertips parted a centimetre
+cannot hold a line open. See [ADR 0023](adr/0023-ink-waits-for-contact.md).
+Distance changes which reading a line may *start* on, and nothing else: the
+tips for a hand at arm's length, the nearest of three pairs for one small
+enough to be far, because at two metres the tips are the noise and the joints
+are the signal. See [ADR 0024](adr/0024-a-far-hand-starts-on-the-joints.md).
+
+A line is still corrected at its start, because a level-crossing gate is late
+there: the start replays the ink from when the fingers met, which the gate only
+knows in retrospect. See [ADR 0020](adr/0020-a-line-starts-where-the-fingers-met.md).
+
+Every threshold in that gate is held by a corpus rather than by a memory of a
+take. `tests/fixtures/pinch-takes/` is real hands reduced to the one scalar the
+gate reads - committable because it carries no image, position or identity - and
+`tests/pinch-takes.test.ts` replays `PinchGate` over it and asserts what each
+take meant: three lines, one line, none. It is the only test here that can say a
+number is *right* rather than that the code does what it says.
+See [ADR 0019](adr/0019-a-pinch-measured-against-real-hands.md). `ui/paint-mode.ts` reads all of
+that and draws: the tray (`ui/paint-tray.ts`, a second `MenuPhysics` with shorter springs) and the
+canvas (`ui/paint-layer.ts`, which draws a stroke one curve at a time as it grows). While the mode is
+on, the pointer for everything - menu included - is the pinch point. See
+[ADR 0017](adr/0017-pinch-to-paint.md).
+
+Two things the pinch taught about the frame loop. The face pass does not run in Paint mode
+(`CONFIG.faces.offWhilePainting`): nothing there reads a face, and the pinch wants the milliseconds.
+And MediaPipe's hand tracker wants every camera frame: fed the 60 fps debug profile, the loop
+processes about 34 of them and the tracker's accuracy on a fast hand roughly halves, while the
+1080p/30 visitor profile is processed in full. A paint take belongs on the visitor's profile. See
+[ADR 0022](adr/0022-a-line-is-held-on-more-than-two-landmarks.md) and friction 0033.

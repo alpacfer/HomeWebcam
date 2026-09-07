@@ -77,8 +77,14 @@ export class PerceptionEngine {
   /**
    * @param timestampMs Must strictly increase. MediaPipe throws on a timestamp
    *   that is not greater than the previous one, so duplicates are skipped.
+   * @param senses Which detectors the moment calls for. Paint mode asks for no
+   *   faces: nothing there reads one, and the pinch wants every millisecond.
    */
-  step(video: HTMLVideoElement, timestampMs: number): PerceptionFrame | null {
+  step(
+    video: HTMLVideoElement,
+    timestampMs: number,
+    senses: { faces: boolean } = { faces: true },
+  ): PerceptionFrame | null {
     if (timestampMs <= this.lastTimestamp) return null;
     this.lastTimestamp = timestampMs;
     this.seq++;
@@ -89,8 +95,11 @@ export class PerceptionEngine {
       this.lastHands = this.timed("hands", () => this.hands.detect(video, timestampMs));
     }
 
-    if (!CONFIG.faces.enabled) {
+    if (!CONFIG.faces.enabled || !senses.faces) {
+      // Empty rather than stale: a face box held from before the mode changed
+      // would follow nobody. The cost reads 0 so the HUD says what is running.
       this.lastFaces = [];
+      this.timings.faces = 0;
     } else if (this.due(CONFIG.faces.everyNFrames)) {
       this.lastFaces = this.timed("faces", () => this.faces.detect(video, timestampMs));
       if (CONFIG.faces.identifyPeople) {

@@ -1,4 +1,5 @@
 import type { CursorState } from "../interaction/cursor.js";
+import type { BrushCursor } from "../interaction/paint-session.js";
 import { at } from "../lib/assert.js";
 import { FACE_CONTOURS, HAND_BONES } from "../perception/landmarks.js";
 import type { FaceFeatures, PerceptionFrame, Vec2 } from "../perception/types.js";
@@ -21,6 +22,7 @@ export function drawOverlay(
   frame: PerceptionFrame,
   cursor: CursorState,
   showDebug: boolean,
+  brush: BrushCursor | null = null,
 ): void {
   const { width: w, height: h } = ctx.canvas;
   ctx.clearRect(0, 0, w, h);
@@ -66,7 +68,9 @@ export function drawOverlay(
     }
   }
 
-  if (cursor.position !== null) {
+  if (brush !== null) {
+    drawBrush(ctx, brush, cursor.dwellProgress, px);
+  } else if (cursor.position !== null) {
     const [x, y] = px(cursor.position);
     const r = w * 0.022;
     ctx.lineWidth = Math.max(3, w / 400);
@@ -86,6 +90,64 @@ export function drawOverlay(
     ctx.fillStyle = CURSOR_COLOR;
     ctx.beginPath();
     ctx.arc(x, y, ctx.lineWidth, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/**
+ * The brush in place of the cursor: a ring the size the ink will be, in the
+ * colour it will be, and the two fingertips that have to meet on it. Open, the
+ * fingertips sit either side of the ring; pinched, they land on it and the ring
+ * fills. That is the whole lesson, and it is drawn rather than written.
+ */
+function drawBrush(
+  ctx: CanvasRenderingContext2D,
+  brush: BrushCursor,
+  dwell: number,
+  px: (p: Vec2) => [number, number],
+): void {
+  const { width: w, height: h } = ctx.canvas;
+  const [x, y] = px(brush.position);
+  // Never thinner than the cursor was: a 9 px line has a 4 px ring otherwise.
+  const r = Math.max(w * 0.012, (brush.width * h) / 2);
+  ctx.lineWidth = Math.max(2, w / 640);
+
+  ctx.setLineDash(brush.erasing ? [ctx.lineWidth * 3, ctx.lineWidth * 3] : []);
+  ctx.strokeStyle = brush.erasing ? "rgba(255, 255, 255, 0.9)" : brush.color;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // The grip disc grows from the middle as the fingers close and is full when
+  // the ink flows, so the gesture answers back the whole way in instead of only
+  // at the threshold. It is drawn from the raw measurement and the solid fill
+  // from the ink actually flowing - the gate closed *and* the fingers together
+  // this frame - so the moment they part the disc drops back to the grip, the
+  // same frame the ink stops. See ADR 0023.
+  if (brush.grip > 0 || brush.pressed) {
+    ctx.globalAlpha = brush.erasing ? 0.22 : 0.55;
+    ctx.fillStyle = brush.erasing ? "#fff" : brush.color;
+    ctx.beginPath();
+    ctx.arc(x, y, r * (brush.pressed ? 1 : brush.grip), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // A dwell on a chip, drawn round the brush the way it is drawn round the cursor.
+  if (dwell > 0) {
+    ctx.strokeStyle = CURSOR_COLOR;
+    ctx.beginPath();
+    ctx.arc(x, y, r + ctx.lineWidth * 3, -Math.PI / 2, -Math.PI / 2 + dwell * Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+  for (const tip of [brush.thumb, brush.index]) {
+    if (tip === null) continue;
+    const [tx, ty] = px(tip);
+    ctx.beginPath();
+    ctx.arc(tx, ty, ctx.lineWidth * 1.4, 0, Math.PI * 2);
     ctx.fill();
   }
 }

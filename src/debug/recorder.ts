@@ -2,7 +2,7 @@ import { CONFIG } from "../config.js";
 import type { CursorState } from "../interaction/cursor.js";
 import { requireElement } from "../lib/assert.js";
 import type { DetectorTimings } from "../perception/engine.js";
-import type { PerceptionFrame, Vec2 } from "../perception/types.js";
+import type { PerceptionFrame, Vec2, Vec3 } from "../perception/types.js";
 import type { TaskAssignment } from "./tasks.js";
 import { digestTrace, type SceneSample, type TraceDigest, type TraceSample } from "./trace.js";
 
@@ -33,7 +33,14 @@ import { digestTrace, type SceneSample, type TraceDigest, type TraceSample } fro
 
 /** What was true of the run when a take started. Supplied by the app. */
 export interface RecordingDiagnostics {
+  /** The camera profile: "debug" is 720p/60, "final" 1080p/30. See CONFIG.camera.modes. */
   cameraMode: string;
+  /**
+   * What the station was showing. Every take before ADR 0021 says "debug"
+   * here and means it for the profile too; since then the two can differ, and
+   * a take on the visitor's profile is the one that answers a visitor's report.
+   */
+  view: string;
   /** What the camera actually negotiated. See describeStream(). */
   cameraSource: string;
   /** Native size of the frames the detectors receive. */
@@ -74,7 +81,7 @@ export interface RecordingManifest {
     mirrored: boolean;
   };
   viewport: { width: number; height: number; devicePixelRatio: number };
-  camera: { mode: string; source: string; error: string | null };
+  camera: { mode: string; view: string; source: string; error: string | null };
   /** Whether recording cost the loop frames is the first thing a reader asks. */
   health: {
     fpsAtStart: number;
@@ -327,6 +334,10 @@ export class DebugRecorder {
         indexTip: roundVec(hand.indexTip),
         palmCenter: roundVec(hand.palmCenter),
         landmarks: hand.landmarks.map(roundVec),
+        // Metres to four places is a tenth of a millimetre: below the model's
+        // own noise, and precise enough that a fixture distilled from this
+        // cannot round through a mark in millimetres. See friction 0030.
+        world: hand.world.map(roundVec3),
       })),
       // Boxes and track ids only. The 478-point mesh is 60 times a second of
       // data that nothing outside the overlay reads, and it would make the
@@ -502,7 +513,12 @@ export class DebugRecorder {
         mirrored: false,
       },
       viewport: start.viewport,
-      camera: { mode: start.cameraMode, source: start.cameraSource, error: start.cameraError },
+      camera: {
+        mode: start.cameraMode,
+        view: start.view,
+        source: start.cameraSource,
+        error: start.cameraError,
+      },
       health: {
         fpsAtStart: round(start.fps, 1),
         fpsWhileRecording: spread(this.fpsSamples),
@@ -654,6 +670,14 @@ function roundVec(point: Vec2): Vec2 {
   return { x: round(point.x, TRACE_DECIMALS), y: round(point.y, TRACE_DECIMALS) };
 }
 
+function roundVec3(v: Vec3): Vec3 {
+  return {
+    x: round(v.x, TRACE_DECIMALS),
+    y: round(v.y, TRACE_DECIMALS),
+    z: round(v.z, TRACE_DECIMALS),
+  };
+}
+
 function roundScene(scene: SceneSample): SceneSample {
   return {
     mode: scene.mode,
@@ -671,6 +695,31 @@ function roundScene(scene: SceneSample): SceneSample {
         glow: round(panel.glow, 3),
       })),
     },
+    paint:
+      scene.paint === null
+        ? null
+        : {
+            pinch: scene.paint.pinch === null ? null : round(scene.paint.pinch, 3),
+            pinchMetres:
+              scene.paint.pinchMetres === null ? null : round(scene.paint.pinchMetres, 4),
+            pinched: scene.paint.pinched,
+            touching: scene.paint.touching,
+            handSize: scene.paint.handSize === null ? null : round(scene.paint.handSize, 4),
+            painting: scene.paint.painting,
+            tool: scene.paint.tool,
+            strokes: scene.paint.strokes,
+            hovered: scene.paint.hovered,
+            panels: scene.paint.panels.map((panel) => ({
+              id: panel.id,
+              rect: {
+                x: round(panel.rect.x, TRACE_DECIMALS),
+                y: round(panel.rect.y, TRACE_DECIMALS),
+                width: round(panel.rect.width, TRACE_DECIMALS),
+                height: round(panel.rect.height, TRACE_DECIMALS),
+              },
+              glow: round(panel.glow, 3),
+            })),
+          },
   };
 }
 

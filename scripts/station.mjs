@@ -7,7 +7,9 @@
  *   npm run station -- watch "expr" --seconds 20 --shoot-when "expr"
  *   npm run station -- probe .countdown__ring --ring
  *   npm run station -- perf --css ".tile{backdrop-filter:none!important}"
- *   npm run station -- puppet wave | point | victory | palm | both | stop
+ *   npm run station -- puppet wave | point | victory | palm | both | stroke | sweep | fist | dive | stop
+ *   npm run station -- puppet hold --at 0.5,0.5 [--pinch 1] [--gesture Open_Palm] [--scale 0.12]
+ *   npm run station -- puppet hold --chip color-2 | --tile paint  [--pinch 1]
  *   npm run station -- record 6 [--name "hand lost when backlit" --note "..."]
  *   npm run station -- record save --name "..." | record discard
  *   npm run station -- record 6 --task latest --step next --note "what happened"
@@ -32,6 +34,12 @@ const NAMED_REGIONS = {
   recorder: { selector: "#recorder", pad: 16 },
   tasks: { selector: "#tasks", pad: 16 },
   dialog: { selector: "#recorder-dialog", pad: 16 },
+  tray: { selector: "#paint-tray", pad: 40 },
+  /** Where the built-in paint scenarios draw: the middle of the mirror. */
+  stroke: {
+    expression:
+      "({ x: innerWidth * 0.2, y: innerHeight * 0.34, width: innerWidth * 0.6, height: innerHeight * 0.34 })",
+  },
 };
 
 /**
@@ -62,6 +70,8 @@ const [command = "state", ...rest] = parsed.positional;
 
 const commands = {
   state: cmdState,
+  camera: cmdCamera,
+  view: cmdView,
   shoot: cmdShoot,
   watch: cmdWatch,
   probe: cmdProbe,
@@ -96,6 +106,47 @@ async function cmdState(cdp) {
     return;
   }
   printState(snapshot);
+}
+
+/**
+ * Switches the camera profile and nothing else. `camera final` from the debug
+ * view is how the recorder gets to see the 1080p/30 the visitor gets, which
+ * before ADR 0021 it could not: D chose the profile and the view together, so
+ * every take ever recorded was 720p. Prints what the camera then negotiated,
+ * because that is the number a take will be judged by.
+ */
+async function cmdCamera(cdp, [mode]) {
+  if (mode !== "debug" && mode !== "final") {
+    console.error("usage: station camera <debug|final>   (debug is 720p/60, final 1080p/30)");
+    process.exit(1);
+  }
+  await cdp.evaluate(`window.__station.camera.use(${JSON.stringify(mode)})`);
+  await cdp.waitFor(`document.body.dataset.cameraMode === ${JSON.stringify(mode)}`, {
+    timeoutMs: 20_000,
+    what: `the camera to reopen on the ${mode} profile`,
+  });
+  await cdp.waitFor("document.body.classList.contains('is-live')", { timeoutMs: 20_000 });
+  await sleep(300);
+  const s = await cdp.snapshot();
+  console.log(
+    `[camera] ${s.camera.mode} profile · negotiated ${s.camera.source} · view ${s.camera.view}`,
+  );
+  if (s.camera.error != null) console.log(`[camera]  ⚠ ${s.camera.error}`);
+}
+
+/** Puts the instruments on the glass or takes them off, leaving the camera as it is. */
+async function cmdView(cdp, [view]) {
+  if (view !== "debug" && view !== "final") {
+    console.error("usage: station view <debug|final>");
+    process.exit(1);
+  }
+  await cdp.evaluate(`window.__station.view.set(${JSON.stringify(view)})`);
+  await cdp.waitFor(`document.body.dataset.view === ${JSON.stringify(view)}`, {
+    timeoutMs: 5000,
+    what: `the ${view} view`,
+  });
+  const s = await cdp.snapshot();
+  console.log(`[view] ${s.camera.view} view · camera ${s.camera.mode} ${s.camera.source}`);
 }
 
 async function cmdShoot(cdp, [out = "captures/station.png"]) {
@@ -249,6 +300,26 @@ async function cmdPuppet(cdp, [name = "stop"]) {
     console.log("[puppet] stopped; the detectors have the frame loop back");
     return;
   }
+  if (name === "hold") {
+    // One hand, parked. Aimed at a chip or a tile by name, so a capture of a
+    // ring mid-fill does not start with somebody reading rectangles off a
+    // snapshot; or at a point, for the brush cursor over open mirror.
+    const hand = { at: await holdTarget(cdp) };
+    if (parsed.has("pinch")) {
+      hand.pinch = parsed.number("pinch", 1);
+      hand.anchor = "pinch";
+    } else if (parsed.has("chip")) {
+      hand.anchor = "pinch";
+    }
+    if (parsed.has("gesture")) hand.gesture = String(parsed.get("gesture"));
+    // The fixture's default scale is a hand at arm's length; 0.12 is one about
+    // two metres back, small enough for the gate's far rule. See ADR 0024.
+    if (parsed.has("scale")) hand.scale = parsed.number("scale", 0.22);
+    await holdPose(cdp, [hand]);
+    console.log(`[puppet] holding ${JSON.stringify(hand)}`);
+    printState(await cdp.snapshot());
+    return;
+  }
   await armPuppet(cdp, name);
   console.log(`[puppet] playing "${name}"`);
   if (parsed.has("wait")) {
@@ -299,16 +370,19 @@ async function cmdRecord(cdp, [first, ...rest]) {
   const wantedTask = parsed.get("task", null);
 
   const before = await cdp.snapshot();
-  const restore = before.camera.mode;
+  // The view, not the camera profile. A take is recorded on whichever profile
+  // the camera is on, so `station camera final` first gives a 1080p take; the
+  // old way here pressed D, which also dropped the camera to 720p. ADR 0021.
+  const restore = before.camera.view;
   if (restore !== "debug") {
-    await cdp.keys(["d"]);
-    await cdp.waitFor("document.body.dataset.cameraMode === 'debug'", {
-      timeoutMs: 20_000,
-      what: "the station to switch to debug mode",
+    await cdp.evaluate('window.__station.view.set("debug")');
+    await cdp.waitFor("document.body.dataset.view === 'debug'", {
+      timeoutMs: 5000,
+      what: "the station to show the debug view",
     });
-    await cdp.waitFor("document.body.classList.contains('is-live')", { timeoutMs: 20_000 });
-    console.log("[record] switched the station to debug mode; it will go back afterwards");
+    console.log("[record] switched the station to the debug view; it will go back afterwards");
   }
+  console.log(`[record] camera ${before.camera.mode} profile · ${before.camera.source}`);
 
   if (typeof wantedTask === "string") {
     // Through the panel, not around it: the step's own button is what a person
@@ -363,11 +437,11 @@ async function cmdRecord(cdp, [first, ...rest]) {
   if (restore !== "debug") await returnTo(cdp, restore);
 }
 
-async function returnTo(cdp, mode) {
-  await cdp.keys([mode === "debug" ? "d" : "f"]);
-  await cdp.waitFor(`document.body.dataset.cameraMode === ${JSON.stringify(mode)}`, {
-    timeoutMs: 20_000,
-    what: "the station to go back to the mode it was in",
+async function returnTo(cdp, view) {
+  await cdp.evaluate(`window.__station.view.set(${JSON.stringify(view)})`);
+  await cdp.waitFor(`document.body.dataset.view === ${JSON.stringify(view)}`, {
+    timeoutMs: 5000,
+    what: "the station to go back to the view it was in",
   });
 }
 
@@ -618,21 +692,6 @@ function checks(config) {
       },
     },
     {
-      name: "a-locked-tile-never-fires",
-      crop: "menu",
-      async run(cdp) {
-        await cdp.reload();
-        const { menu } = await cdp.snapshot();
-        await holdPose(cdp, [{ at: centreOf(menu.panels[1]), gesture: "Pointing_Up" }]);
-        await sleep(dwellMs * 3);
-        const state = await cdp.snapshot();
-        return {
-          ok: state.experience.mode === "home" && state.menu.panels[1].dwell === 0,
-          detail: `mode=${state.experience.mode} dwell=${state.menu.panels[1].dwell}`,
-        };
-      },
-    },
-    {
       name: "victory-opens-picture",
       crop: "menu",
       async run(cdp) {
@@ -709,6 +768,358 @@ function checks(config) {
       },
     },
     {
+      name: "dwell-opens-paint",
+      crop: "menu",
+      async run(cdp) {
+        await cdp.reload();
+        const { menu } = await cdp.snapshot();
+        const paintTile = menu.panels.find((p) => p.id === "paint");
+        await holdPose(cdp, [{ at: centreOf(paintTile), gesture: "Pointing_Up" }]);
+        await cdp.waitFor("window.__station.snapshot().experience.mode === 'paint'", {
+          timeoutMs: dwellMs * 4,
+          what: "a dwell to open Paint mode",
+        });
+        // Computed style for both, not the flag the app set. See friction 0019.
+        const state = await cdp.snapshot();
+        const tray = await cdp.evaluate(
+          "getComputedStyle(document.getElementById('paint-tray-anchor')).display",
+        );
+        const { width, height } = state.paint.canvas;
+        return {
+          ok:
+            state.paint.visible &&
+            width > 0 &&
+            height > 0 &&
+            tray !== "none" &&
+            state.paint.tray.length === 11,
+          detail: `canvas ${state.paint.visible ? "shown" : "hidden"} ${width}x${height} · tray display ${tray} · ${state.paint.tray.length} chips`,
+        };
+      },
+    },
+    {
+      name: "a-pinch-paints-a-line",
+      crop: "stroke",
+      async run(cdp) {
+        const before = await cdp.evaluate("window.__station.paint.painted()");
+        await armPuppet(cdp, "stroke");
+        await cdp.waitFor("window.__station.puppet.finished()", { timeoutMs: 6000 });
+        const state = await cdp.snapshot();
+        const painted = await cdp.evaluate("window.__station.paint.painted()");
+        // A pixel on the path, read off the canvas: the stroke is there and it
+        // is the colour that was current.
+        const pixel = await samplePaint(cdp, await midpointOfStroke(cdp));
+        const wanted = hexToRgb(config.paint.colors[config.paint.defaultColor]);
+        return {
+          ok:
+            state.paint.status?.strokes === 1 &&
+            painted > before &&
+            pixel[3] > 200 &&
+            colourClose(pixel, wanted),
+          detail: `${state.paint.status?.strokes} stroke(s) · ${painted - before} px painted · pixel ${JSON.stringify(pixel)} wanted ${JSON.stringify(wanted)}`,
+        };
+      },
+    },
+    {
+      name: "an-open-hand-paints-nothing",
+      crop: "stroke",
+      async run(cdp) {
+        const before = await cdp.evaluate("window.__station.paint.painted()");
+        const strokes = (await cdp.snapshot()).paint.status?.strokes;
+        await armPuppet(cdp, "sweep");
+        await cdp.waitFor("window.__station.puppet.finished()", { timeoutMs: 6000 });
+        const after = await cdp.evaluate("window.__station.paint.painted()");
+        const state = await cdp.snapshot();
+        return {
+          ok: after === before && state.paint.status?.strokes === strokes,
+          detail: `${after - before} px changed · strokes ${strokes} -> ${state.paint.status?.strokes}`,
+        };
+      },
+    },
+    {
+      name: "a-fist-paints-nothing",
+      crop: "stroke",
+      async run(cdp) {
+        // The fixture's fist has its tips together, so the ratio alone would
+        // call it a pinch; the label is what says it is not.
+        const before = await cdp.evaluate("window.__station.paint.painted()");
+        const strokes = (await cdp.snapshot()).paint.status?.strokes;
+        await armPuppet(cdp, "fist");
+        await cdp.waitFor("window.__station.puppet.finished()", { timeoutMs: 6000 });
+        const after = await cdp.evaluate("window.__station.paint.painted()");
+        const state = await cdp.snapshot();
+        return {
+          ok: after === before && state.paint.status?.strokes === strokes,
+          detail: `${after - before} px changed · strokes ${strokes} -> ${state.paint.status?.strokes} · pinch read ${state.paint.status?.pinch?.toFixed(2)}`,
+        };
+      },
+    },
+    {
+      name: "a-dwell-picks-a-colour",
+      crop: "tray",
+      async run(cdp) {
+        const chip = await chipCentre(cdp, "color-2");
+        await holdPose(cdp, [{ at: chip, anchor: "pinch", pinch: 0 }]);
+        const wanted = config.paint.colors[2];
+        await cdp.waitFor(
+          `window.__station.snapshot().paint.status?.tool.color === ${JSON.stringify(wanted)}`,
+          { timeoutMs: dwellMs * 4, what: "a dwell on a colour chip to pick it" },
+        );
+        // And the ink agrees: a new line along the same path comes out in it.
+        await armPuppet(cdp, "stroke");
+        await cdp.waitFor("window.__station.puppet.finished()", { timeoutMs: 6000 });
+        const pixel = await samplePaint(cdp, await midpointOfStroke(cdp));
+        const selected = await cdp.evaluate(
+          "document.querySelector('[data-chip=\"color-2\"]').classList.contains('chip--selected')",
+        );
+        return {
+          ok: colourClose(pixel, hexToRgb(wanted)) && selected === true,
+          detail: `pixel ${JSON.stringify(pixel)} wanted ${wanted} · chip ${selected ? "shown selected" : "NOT shown selected"}`,
+        };
+      },
+    },
+    {
+      name: "a-pinch-picks-a-chip-at-once",
+      crop: "tray",
+      async run(cdp) {
+        const chip = await chipCentre(cdp, "size-2");
+        // Hover open first, so the chip is the one under the hand when the
+        // fingers close; then close them and time how long the pick takes.
+        await holdPose(cdp, [{ at: chip, anchor: "pinch", pinch: 0 }]);
+        await sleep(250);
+        const started = Date.now();
+        await holdPose(cdp, [{ at: chip, anchor: "pinch", pinch: 1 }]);
+        await cdp.waitFor(
+          `Math.abs(window.__station.snapshot().paint.status?.tool.width - ${config.paint.sizes[2]}) < 1e-9`,
+          { timeoutMs: dwellMs, what: "a pinch on a width chip to pick it before a dwell could" },
+        );
+        const took = Date.now() - started;
+        // Holding on, pinched, must not pick it a second time by dwell - for
+        // the eraser that would be a toggle undoing itself. Check on the eraser.
+        const erase = await chipCentre(cdp, "erase");
+        await holdPose(cdp, [{ at: erase, anchor: "pinch", pinch: 0 }]);
+        await sleep(250);
+        await holdPose(cdp, [{ at: erase, anchor: "pinch", pinch: 1 }]);
+        await cdp.waitFor("window.__station.snapshot().paint.status?.tool.kind === 'erase'", {
+          timeoutMs: dwellMs,
+          what: "a pinch on the eraser",
+        });
+        await sleep(dwellMs * 1.5);
+        const state = await cdp.snapshot();
+        return {
+          ok: took < dwellMs && state.paint.status?.tool.kind === "erase",
+          detail: `width picked in ${took} ms (dwell is ${dwellMs}) · still ${state.paint.status?.tool.kind} after holding`,
+        };
+      },
+    },
+    {
+      name: "the-eraser-cuts-a-hole",
+      crop: "stroke",
+      async run(cdp) {
+        const before = await samplePaint(cdp, await midpointOfStroke(cdp));
+        await armPuppet(cdp, "stroke");
+        await cdp.waitFor("window.__station.puppet.finished()", { timeoutMs: 6000 });
+        const after = await samplePaint(cdp, await midpointOfStroke(cdp));
+        return {
+          ok: before[3] > 200 && after[3] === 0,
+          detail: `alpha ${before[3]} -> ${after[3]} on the path`,
+        };
+      },
+    },
+    {
+      name: "painting-through-the-tray-picks-nothing",
+      crop: "tray",
+      async run(cdp) {
+        const chip = await chipCentre(cdp, "color-0");
+        const toolBefore = (await cdp.snapshot()).paint.status?.tool;
+        const start = (await strokePath(cdp)).from;
+        // Close on the mirror, drag onto a colour chip and sit there, pinched,
+        // for longer than any dwell; then let go.
+        await cdp.evaluate(
+          `window.__station.puppet.play(${JSON.stringify({
+            name: "through-the-tray",
+            from: { hands: [{ at: start, anchor: "pinch", pinch: 0 }] },
+            steps: [
+              { to: { hands: [{ at: start, anchor: "pinch", pinch: 1 }] }, ms: 200 },
+              { to: { hands: [{ at: chip, anchor: "pinch", pinch: 1 }] }, ms: 600 },
+              { to: { hands: [{ at: chip, anchor: "pinch", pinch: 1 }] }, ms: dwellMs * 1.5 },
+              { to: { hands: [{ at: chip, anchor: "pinch", pinch: 0 }] }, ms: 200 },
+              { to: { hands: [{ at: chip, anchor: "pinch", pinch: 0 }] }, ms: 200 },
+            ],
+          })})`,
+        );
+        await cdp.waitFor("window.__station.puppet.finished()", { timeoutMs: 8000 });
+        const state = await cdp.snapshot();
+        const toolAfter = state.paint.status?.tool;
+        return {
+          ok: JSON.stringify(toolAfter) === JSON.stringify(toolBefore),
+          detail: `tool ${toolBefore?.kind} ${toolBefore?.color} -> ${toolAfter?.kind} ${toolAfter?.color}`,
+        };
+      },
+    },
+    {
+      name: "the-bin-needs-a-long-hold",
+      crop: "tray",
+      async run(cdp) {
+        const clearMs = config.paint.clearDwellMs;
+        const strokesBefore = (await cdp.snapshot()).paint.status?.strokes ?? 0;
+        const chip = await chipCentre(cdp, "clear");
+        await holdPose(cdp, [{ at: chip, anchor: "pinch", pinch: 0 }]);
+        await sleep(dwellMs + 150);
+        const early = await cdp.snapshot();
+        await cdp.waitFor("window.__station.snapshot().paint.status?.strokes === 0", {
+          timeoutMs: clearMs * 2,
+          what: "the long hold on the bin to clear the painting",
+        });
+        const painted = await cdp.evaluate("window.__station.paint.painted()");
+        return {
+          ok: strokesBefore > 0 && early.paint.status?.strokes === strokesBefore && painted === 0,
+          detail: `${strokesBefore} strokes · still ${early.paint.status?.strokes} after ${dwellMs + 150} ms · ${painted} px left after the long hold`,
+        };
+      },
+    },
+    {
+      name: "a-released-pinch-leaves-no-tail",
+      crop: "stroke",
+      async run(cdp) {
+        // The gate waits openMs before it will believe a release, and it paints
+        // for all of it. `overshoot` keeps the hand travelling through that
+        // wait, so the ink between the end of the line and where the hand ended
+        // up is exactly what the trim has to take back. Read off the canvas,
+        // because the stroke's own point count is a number the app wrote.
+        // See ADR 0018.
+        await cdp.keys(["x"]);
+        await cdp.waitFor("window.__station.paint.painted() === 0", {
+          timeoutMs: 4000,
+          what: "an empty canvas to start from",
+        });
+        await armPuppet(cdp, "overshoot");
+        await cdp.waitFor("window.__station.puppet.finished()", { timeoutMs: 8000 });
+
+        // The same points src/debug/puppet.ts drives the scenario through.
+        const from = { x: 0.3, y: 0.5 };
+        const to = { x: 0.7, y: 0.56 };
+        const overshoot = { x: 0.86, y: 0.62 };
+        const along = (k) => ({
+          x: to.x + (overshoot.x - to.x) * k,
+          y: to.y + (overshoot.y - to.y) * k,
+        });
+        const drawn = await samplePaint(cdp, { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 });
+        const past = await samplePaint(cdp, along(0.8));
+        const end = await samplePaint(cdp, overshoot);
+        return {
+          ok: drawn[3] > 200 && past[3] === 0 && end[3] === 0,
+          detail: `line alpha ${drawn[3]} · 80% past its end ${past[3]} · where the hand stopped ${end[3]}`,
+        };
+      },
+    },
+    {
+      name: "a-parted-pinch-ends-the-line",
+      crop: "stroke",
+      async run(cdp) {
+        // The complaint behind ADR 0023: fingertips parted a centimetre read
+        // between the two marks, and a gate with no clock on that band drew for
+        // as long as they stayed there. `part` draws a line, parts the fingers
+        // to a reading of about 0.22 and keeps travelling, and never opens them
+        // wide. The line has to end on its own while the fingers are still
+        // parted, and nothing may be inked past the parting. Read off the canvas.
+        await cdp.keys(["x"]);
+        await cdp.waitFor("window.__station.paint.painted() === 0", {
+          timeoutMs: 4000,
+          what: "an empty canvas to start from",
+        });
+        const scenario = await cdp.evaluate("window.__station.scenarios().part");
+        const at = (i) => scenario.steps[i].to.hands[0].at;
+        const from = scenario.from.hands[0].at;
+        const to = at(2);
+        const parted = at(3);
+        const end = at(4);
+        await armPuppet(cdp, "part");
+        await cdp.waitFor("window.__station.snapshot().paint.status?.pinched === true", {
+          timeoutMs: 4000,
+          what: "the pinch to close",
+        });
+        await cdp.waitFor("window.__station.snapshot().paint.status?.pinched === false", {
+          timeoutMs: 6000,
+          what: "the parted pinch to end its line",
+        });
+        // Ended while the hand was still parted, not because the scenario ran out.
+        const stillParted = !(await cdp.evaluate("window.__station.puppet.finished()"));
+        await cdp.waitFor("window.__station.puppet.finished()", { timeoutMs: 8000 });
+        const drawn = await samplePaint(cdp, { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 });
+        const past = await samplePaint(cdp, {
+          x: (parted.x + end.x) / 2,
+          y: (parted.y + end.y) / 2,
+        });
+        const stopped = await samplePaint(cdp, end);
+        return {
+          ok: stillParted && drawn[3] > 200 && past[3] === 0 && stopped[3] === 0,
+          detail:
+            `ended ${stillParted ? "while still parted" : "only when the scenario ran out"}` +
+            ` · line alpha ${drawn[3]} · past the parting ${past[3]} · where the hand stopped ${stopped[3]}`,
+        };
+      },
+    },
+    {
+      name: "a-line-starts-where-the-fingers-met",
+      crop: "stroke",
+      async run(cdp) {
+        // The mirror of the check above. A gate cannot confirm a pinch until it
+        // has held, so `dive` closes the fingers while the hand is already
+        // travelling and the head of the line is drawn during the wait. Read
+        // off the canvas: the ink has to reach up to where the fingers met, not
+        // begin wherever the hand had got to. See ADR 0020.
+        await cdp.keys(["x"]);
+        await cdp.waitFor("window.__station.paint.painted() === 0", {
+          timeoutMs: 4000,
+          what: "an empty canvas to start from",
+        });
+        await armPuppet(cdp, "dive");
+        await cdp.waitFor("window.__station.puppet.finished()", { timeoutMs: 8000 });
+
+        // The same points src/debug/puppet.ts drives the scenario through.
+        const met = { x: 0.42, y: 0.38 };
+        const to = { x: 0.45, y: 0.82 };
+        const above = { x: 0.42, y: 0.28 };
+        const head = await samplePaint(cdp, met);
+        const body = await samplePaint(cdp, { x: (met.x + to.x) / 2, y: (met.y + to.y) / 2 });
+        // Not all the way back to where the hand was before it began closing.
+        const early = await samplePaint(cdp, above);
+        return {
+          ok: head[3] > 200 && body[3] > 200 && early[3] === 0,
+          detail: `where the fingers met ${head[3]} · mid-line ${body[3]} · before they closed ${early[3]}`,
+        };
+      },
+    },
+    {
+      name: "leaving-paint-keeps-the-painting",
+      crop: "menu",
+      async run(cdp) {
+        await armPuppet(cdp, "stroke");
+        await cdp.waitFor("window.__station.puppet.finished()", { timeoutMs: 6000 });
+        const painted = await cdp.evaluate("window.__station.paint.painted()");
+        const { menu } = await cdp.snapshot();
+        const picture = menu.panels.find((p) => p.id === "picture");
+        await holdPose(cdp, [{ at: centreOf(picture), anchor: "pinch", pinch: 0 }]);
+        await cdp.waitFor("window.__station.snapshot().experience.mode === 'picture'", {
+          timeoutMs: dwellMs * 4,
+          what: "a dwell on the Picture tile from Paint mode",
+        });
+        const away = await cdp.snapshot();
+        const paintTile = menu.panels.find((p) => p.id === "paint");
+        await holdPose(cdp, [{ at: centreOf(paintTile), gesture: "Pointing_Up" }]);
+        await cdp.waitFor("window.__station.snapshot().experience.mode === 'paint'", {
+          timeoutMs: dwellMs * 4,
+          what: "a dwell back into Paint mode",
+        });
+        const back = await cdp.snapshot();
+        const restored = await cdp.evaluate("window.__station.paint.painted()");
+        return {
+          ok: painted > 0 && !away.paint.visible && back.paint.visible && restored === painted,
+          detail: `${painted} px · hidden in picture: ${!away.paint.visible} · ${restored} px back in paint`,
+        };
+      },
+    },
+    {
       name: "the-recorder-is-debug-only",
       crop: "menu",
       async run(cdp) {
@@ -765,6 +1176,80 @@ function checks(config) {
         return {
           ok: shown === VERIFY_TASK.steps[0].instruction,
           detail: `step reads ${JSON.stringify(shown)}`,
+        };
+      },
+    },
+    {
+      name: "the-tray-clears-the-task-list",
+      crop: "tasks",
+      async run(cdp) {
+        // Debug view, a task on the list, Paint mode on: the three things a
+        // person doing a task has on screen at once. The tray was under the
+        // list the first time. See friction 0024.
+        await cdp.keys(["b"]);
+        await cdp.waitFor("window.__station.snapshot().experience.mode === 'paint'", {
+          timeoutMs: 3000,
+          what: "the B key to open Paint mode",
+        });
+        const boxes = await cdp.evaluate(
+          `(() => { const r = (s) => document.querySelector(s).getBoundingClientRect();
+             const tray = r('#paint-tray'); const tasks = r('#tasks');
+             return { trayLeft: tray.left, trayRight: tray.right, tasksLeft: tasks.left,
+                      tasksRight: tasks.right, tasksBottom: tasks.bottom, height: innerHeight }; })()`,
+        );
+        // Which one is on the left is not this check's business - only that
+        // they do not share any of it. Asserting an order pinned the fix in
+        // place and failed the moment the better fix moved the other one.
+        const clear = boxes.tasksRight <= boxes.trayLeft || boxes.trayRight <= boxes.tasksLeft;
+        // The floor is reported, not asserted: how many tasks are open is the
+        // operator's business, not the code's. ADR 0015 makes it a ceiling on
+        // purpose, and this is where somebody finds out they have hit it.
+        const floor =
+          boxes.tasksBottom > boxes.height
+            ? ` · ⚠ list runs ${(boxes.tasksBottom - boxes.height).toFixed(0)} px past the floor - too many tasks open`
+            : "";
+        return {
+          ok: clear,
+          detail: `tray ${boxes.trayLeft.toFixed(0)}-${boxes.trayRight.toFixed(0)} px · list ${boxes.tasksLeft.toFixed(0)}-${boxes.tasksRight.toFixed(0)}${floor}`,
+        };
+      },
+    },
+    {
+      name: "a-chip-hovers-where-it-is-drawn",
+      crop: "tray",
+      async run(cdp) {
+        // Two rectangles have to agree: the one the browser draws the chip in,
+        // and the one the physics tests a hand against, which is cached from a
+        // measurement taken when the tray last changed size. A rule keyed on
+        // the camera mode moved the tray without resizing it, so in the debug
+        // view they were 200 px apart and every tool was dead. Both modes, both
+        // times, or this says nothing. See friction 0026.
+        const missed = [];
+        for (const mode of ["final", "debug"]) {
+          await cdp.keys([mode === "debug" ? "d" : "f"]);
+          await cdp.waitFor(`document.body.dataset.cameraMode === '${mode}'`, {
+            timeoutMs: 20_000,
+            what: `${mode} camera mode`,
+          });
+          await cdp.waitFor("document.body.classList.contains('is-live')", { timeoutMs: 20_000 });
+          const chip = await chipCentre(cdp, "color-4");
+          await holdPose(cdp, [{ at: chip, anchor: "pinch", pinch: 0 }]);
+          await sleep(500);
+          const state = await cdp.snapshot();
+          const hovered =
+            state.paint.tray.find((c) => c.classes.includes("chip--hovered"))?.id ?? null;
+          if (hovered !== "color-4") {
+            missed.push(
+              `${mode}: drawn at ${chip.x.toFixed(3)} and hovered ${hovered ?? "nothing"}`,
+            );
+          }
+        }
+        // Put the hands back the way this check found them, so the recorder
+        // check further down still records a camera take rather than ours.
+        await cdp.evaluate("window.__station.puppet.stop()");
+        return {
+          ok: missed.length === 0,
+          detail: missed.length === 0 ? "the same chip in final and debug" : missed.join(" · "),
         };
       },
     },
@@ -892,6 +1377,68 @@ function checks(config) {
         };
       },
     },
+    {
+      name: "a-take-can-be-recorded-on-the-visitor-camera",
+      crop: "hud",
+      async run(cdp) {
+        // Until ADR 0021 the recorder lived on the debug *camera profile*, so
+        // every take ever made was 720p and the 1080p a visitor gets was never
+        // once recorded. The view and the profile are two settings now: from the
+        // debug view, put the camera on the visitor's profile, record, and the
+        // manifest has to say so. Restores the camera it found.
+        const before = await cdp.snapshot();
+        await cdp.evaluate('window.__station.view.set("debug")');
+        await cdp.waitFor("document.body.dataset.view === 'debug'", { timeoutMs: 5000 });
+        await cdp.evaluate('window.__station.camera.use("final")');
+        await cdp.waitFor("document.body.dataset.cameraMode === 'final'", {
+          timeoutMs: 20_000,
+          what: "the camera to reopen on the final profile",
+        });
+        await cdp.waitFor("document.body.classList.contains('is-live')", { timeoutMs: 20_000 });
+        const onFinal = await cdp.snapshot();
+        const display = await cdp.evaluate(RECORDER_DISPLAY);
+
+        await cdp.evaluate("window.__station.recorder.start()");
+        await cdp.waitFor("window.__station.snapshot().recording.phase === 'recording'", {
+          timeoutMs: 5000,
+          what: "the recorder to start on the final profile",
+        });
+        await sleep(1200);
+        await cdp.evaluate("window.__station.recorder.stop()");
+        await cdp.waitFor("window.__station.snapshot().recording.phase === 'naming'", {
+          timeoutMs: 15_000,
+          what: "the take to finish encoding",
+        });
+        const filename = await cdp.evaluate(
+          `window.__station.recorder.save(${JSON.stringify(VERIFY_RECORDING_NAME)},` +
+            ` "Written and removed by npm run verify: the visitor's camera profile.")`,
+        );
+        const stem = String(filename).replace(/\.webm$/, "");
+        const manifest = JSON.parse(await readFile(join("recordings", `${stem}.json`), "utf8"));
+
+        await cdp.evaluate(`window.__station.camera.use(${JSON.stringify(before.camera.mode)})`);
+        await cdp.waitFor(
+          `document.body.dataset.cameraMode === ${JSON.stringify(before.camera.mode)}`,
+          { timeoutMs: 20_000, what: "the camera to go back to the profile it was on" },
+        );
+        await cdp.evaluate(`window.__station.view.set(${JSON.stringify(before.camera.view)})`);
+        const source = String(manifest.camera?.source ?? "");
+        return {
+          ok:
+            onFinal.camera.mode === "final" &&
+            onFinal.camera.view === "debug" &&
+            display !== "none" &&
+            manifest.camera?.mode === "final" &&
+            manifest.camera?.view === "debug" &&
+            source.startsWith("1920x1080") &&
+            manifest.video?.width === 1920,
+          detail:
+            `camera ${onFinal.camera.mode} ${onFinal.camera.source} under the ${onFinal.camera.view} view` +
+            ` · recorder display ${display} · manifest ${manifest.camera?.mode}/${manifest.camera?.view}` +
+            ` ${source}, video ${manifest.video?.width}x${manifest.video?.height}`,
+        };
+      },
+    },
   ];
 }
 
@@ -907,6 +1454,60 @@ async function holdPose(cdp, hands) {
 
 function centreOf(panel) {
   return { x: panel.rect.x + panel.rect.width / 2, y: panel.rect.y + panel.rect.height / 2 };
+}
+
+/** `--chip <id>`, `--tile <mode>` or `--at x,y`: where a held hand goes. */
+async function holdTarget(cdp) {
+  if (parsed.has("chip")) return chipCentre(cdp, String(parsed.get("chip")));
+  if (parsed.has("tile")) {
+    const { menu } = await cdp.snapshot();
+    const tile = menu.panels.find((p) => p.id === String(parsed.get("tile")));
+    if (tile === undefined) throw new Error(`no tile "${parsed.get("tile")}"`);
+    return centreOf(tile);
+  }
+  const at = String(parsed.get("at", "0.5,0.5")).split(",").map(Number);
+  if (at.length !== 2 || at.some(Number.isNaN)) throw new Error("--at wants x,y");
+  return { x: at[0], y: at[1] };
+}
+
+/** Where a tray chip is right now, off the snapshot, normalized. */
+async function chipCentre(cdp, id) {
+  const { paint } = await cdp.snapshot();
+  const chip = paint.tray.find((c) => c.id === id);
+  if (chip === undefined) throw new Error(`no chip "${id}" in the tray`);
+  return centreOf(chip);
+}
+
+/**
+ * Where the built-in stroke scenario draws, read from the scenario itself so
+ * this cannot drift from src/debug/puppet.ts: the pinch closes at `from` and
+ * opens at `to`.
+ */
+async function strokePath(cdp) {
+  const scenario = await cdp.evaluate("window.__station.scenarios().stroke");
+  const from = scenario.from.hands[0].at;
+  const to = scenario.steps.at(-1).to.hands[0].at;
+  return { from, to };
+}
+
+/** Halfway along the path the built-in stroke scenario draws. */
+async function midpointOfStroke(cdp) {
+  const { from, to } = await strokePath(cdp);
+  return { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+}
+
+async function samplePaint(cdp, point) {
+  return cdp.evaluate(`window.__station.paint.sample(${point.x}, ${point.y})`);
+}
+
+function hexToRgb(hex) {
+  const value = Number.parseInt(hex.replace("#", ""), 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+/** Within a few counts per channel: the canvas is not colour-managed identically everywhere. */
+function colourClose(pixel, rgb) {
+  return rgb.every((channel, i) => Math.abs(pixel[i] - channel) <= 8);
 }
 
 async function badgePath(cdp) {
@@ -927,7 +1528,7 @@ async function resolveClip(cdp, crop, zoom) {
   if (crop === null || crop === true) return null;
   const named = NAMED_REGIONS[crop];
   const box = named
-    ? await cdp.evaluate(boxExpression(named.selector, named.pad))
+    ? await cdp.evaluate(named.expression ?? boxExpression(named.selector, named.pad))
     : parseBox(String(crop));
   if (box === null) throw new Error(`crop "${crop}" matched nothing`);
   return { ...box, scale: zoom };
@@ -1096,7 +1697,7 @@ async function recordingFiles() {
 function printState(s) {
   const badge = s.perceptionSource === "puppet" ? "  ⚠ PUPPET HANDS" : "";
   console.log(
-    `[state] ${s.camera.mode} · ${s.camera.fps.toFixed(0)} fps · ${s.camera.source}${badge}`,
+    `[state] ${s.camera.view} view · camera ${s.camera.mode} ${s.camera.source} · ${s.camera.fps.toFixed(0)} fps${badge}`,
   );
   // friction 0011 claimed this warning was here and it was not, so a whole
   // session's numbers were read without knowing the window was unfocused.
@@ -1117,6 +1718,31 @@ function printState(s) {
   for (const panel of s.menu.panels) {
     console.log(
       `[state]   ${panel.id.padEnd(8)} offset ${panel.offset.x.toFixed(1)},${panel.offset.y.toFixed(1)} px · lean ${panel.leanDeg.y.toFixed(1)}° · glow ${panel.glow.toFixed(2)} · dwell ${panel.dwell.toFixed(2)}${panel.hold === null ? "" : ` · hold ${panel.hold.toFixed(2)}`}`,
+    );
+  }
+  if (s.paint.visible || s.paint.status !== null) {
+    const p = s.paint;
+    const status = p.status;
+    const selected = p.tray.filter((c) => c.classes.includes("chip--selected")).map((c) => c.id);
+    const hovered = p.tray.find((c) => c.classes.includes("chip--hovered"));
+    if (p.visible && (p.canvas.width === 0 || p.canvas.height === 0)) {
+      console.log(
+        "[state]  ⚠ the paint canvas is 0x0 - it is on the glass and every stroke lands in no pixels. See friction 0023.",
+      );
+    }
+    console.log(
+      `[state] paint ${p.visible ? `on the glass, ${p.canvas.width}x${p.canvas.height}` : "⚠ HIDDEN while in paint mode"}` +
+        (status === null
+          ? ""
+          : ` · pinch ${status.pinch === null ? "no hand" : status.pinch.toFixed(2)}` +
+            (status.pinchMetres == null ? "" : ` (${(status.pinchMetres * 1000).toFixed(0)} mm)`) +
+            ` · ${status.painting ? (status.touching === false ? "loose" : "painting") : status.pinched ? "pinched" : "open"}` +
+            ` · ${status.tool.kind === "erase" ? "eraser" : status.tool.color} ${status.tool.width.toFixed(3)}` +
+            ` · ${status.strokes} strokes, ${status.points} points`),
+    );
+    console.log(
+      `[state]   tray ${p.tray.length} chips · selected ${selected.join(", ") || "none"}` +
+        (hovered === undefined ? "" : ` · hovered ${hovered.id} dwell ${hovered.dwell.toFixed(2)}`),
     );
   }
   if (s.recording.visible || s.recording.phase !== "idle") {

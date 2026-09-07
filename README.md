@@ -17,6 +17,9 @@ Double-click **HomeWebcam.desktop**, or from a terminal:
 First run installs dependencies and downloads ~18 MB of detection models; after
 that it goes straight to the final visitor view. Press `D` for the raw 720p/60
 processing view and debug overlay, or `F` for the clean 1080p/30 visitor view.
+`R` swaps the camera profile on its own, so the debug view can look at, and
+record, the 1080p a visitor gets. `P` and `B` open Picture and Paint mode from
+the keyboard; `X` wipes a painting.
 Press `Ctrl+C` to stop.
 
 ## What works today
@@ -27,6 +30,17 @@ activate by holding still. The top menu opens Picture mode by dwell or a held
 victory gesture. In Picture mode, hold an open palm to start a three-second
 countdown; the full camera frame is saved locally in `captures/`.
 The file is a lossless PNG at the camera's native negotiated resolution.
+
+Paint mode turns the mirror into a whiteboard: bring your thumb and index finger
+together and a line follows your hand. It draws only while they are in contact:
+the ink stops the frame they part, and the line itself ends a moment later,
+because the fingertips are the noisiest thing the hand model tracks and a
+glitch must not cut a line in half. See
+[ADR 0023](docs/adr/0023-ink-waits-for-contact.md). A tray of glass chips down the side holds
+six colours, three widths, an eraser and a bin; point at one and hold to pick
+it, or pinch on it to pick it at once. The bin wants a longer hold, because
+there is no undo. Everything is one hand. See
+[ADR 0017](docs/adr/0017-pinch-to-paint.md).
 
 The interface has no words in it. Modes are glass tiles carrying one icon each,
 and the gesture that opens a mode is drawn on the tile as a badge that fills
@@ -46,7 +60,7 @@ npm run preflight    # inspect the active server/browser before runtime work
 npm run dev          # dev server on http://127.0.0.1:5173
 npm run check        # lint + types + tests, all of it
 npm run station      # ask the running station anything: state, shoot, probe, perf
-npm run verify       # drive every interaction with scripted hands, ~30 s
+npm run verify       # drive every interaction with scripted hands, ~2 min
 npm run screenshot   # attach to start.sh's Chrome and capture the live app
 ```
 

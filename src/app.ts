@@ -2,6 +2,7 @@ import {
   CameraError,
   type CameraMode,
   describeStream,
+  type StationView,
   startCamera,
   stopCamera,
 } from "./camera/camera.js";
@@ -61,7 +62,14 @@ export class App {
   private stream: MediaStream | null = null;
   private source = "starting";
   private running = false;
+  /** The camera profile: which resolution and rate the camera is delivering. */
   private mode: CameraMode = CONFIG.ui.defaultCameraMode;
+  /**
+   * What is on the glass: the visitor's mirror, or the instruments. Normally
+   * the same word as `mode`, and deliberately not the same variable, so a take
+   * can be recorded on the visitor's camera profile. See StationView.
+   */
+  private view: StationView = CONFIG.ui.defaultCameraMode;
   private modeChange: Promise<void> = Promise.resolve();
   private loopGeneration = 0;
   private lastHudAt = 0;
@@ -111,6 +119,7 @@ export class App {
 
   async start(): Promise<void> {
     setupMirror(this.video);
+    this.presentView();
     this.presentMode();
     // Only on resize. The canvas is position:fixed inset:0, so its CSS box
     // cannot change any other way, and fitCanvas reads clientWidth - a forced
@@ -118,16 +127,27 @@ export class App {
     window.addEventListener("resize", () => fitCanvas(this.canvas));
     window.addEventListener("keydown", (e) => {
       if (e.repeat) return;
-      // d, f, p and c are letters, and the recorder's dialog has text fields in
-      // it. Without this, naming a recording "debug flicker" reopens the camera
-      // twice and fires the shutter.
+      // d, f, p, b, x and c are letters, and the recorder's dialog has text
+      // fields in it. Without this, naming a recording "debug flicker" reopens
+      // the camera twice and fires the shutter.
       if (isTextEntry(e.target)) return;
       const key = e.key.toLowerCase();
       if (key === "d" || key === "f") {
         e.preventDefault();
-        this.requestMode(key === "d" ? "debug" : "final");
+        const chosen = key === "d" ? "debug" : "final";
+        this.setView(chosen);
+        this.requestMode(chosen);
+      } else if (key === "r") {
+        // The other camera profile, same view: this is how the debug surface
+        // gets to look at, and record, the 1080p the visitor gets. ADR 0021.
+        e.preventDefault();
+        this.requestMode(this.mode === "debug" ? "final" : "debug");
       } else if (key === "p") {
         this.experience.enterPicture();
+      } else if (key === "b") {
+        this.experience.enterPaint();
+      } else if (key === "x") {
+        this.experience.clearPainting();
       } else if (key === "c") {
         this.experience.requestCapture(performance.now());
       }
@@ -223,7 +243,9 @@ export class App {
           this.puppet.frame(now, window.innerWidth / window.innerHeight),
           this.engine.hear(),
         )
-      : this.engine.step(this.video, now);
+      : this.engine.step(this.video, now, {
+          faces: !(CONFIG.faces.offWhilePainting && this.experience.painting),
+        });
     if (frame !== null) {
       this.fps.tick(now);
       this.lastFrameAt = performance.now();
@@ -234,19 +256,21 @@ export class App {
       // ends has that word in its own trace.
       this.recorder.sample(frame, cursor);
       for (const utterance of frame.heard) this.onHeard(utterance);
-      const showDebug = this.mode === "debug";
-      drawOverlay(this.ctx, frame, cursor, showDebug);
+      const showDebug = this.view === "debug";
+      drawOverlay(this.ctx, frame, cursor, showDebug, this.experience.brush());
 
       if (showDebug && frame.t - this.lastHudAt >= 1000 / CONFIG.ui.hudHz) {
         this.lastHudAt = frame.t;
         this.recorder.setVoice(this.engine.voice);
         this.hud.render(frame, cursor, {
           mode: this.mode,
+          view: this.view,
           fps: this.fps.fps,
           capturedFps: this.capturedFps,
           camera: this.source,
           timings: this.engine.detectorTimings,
           voice: this.engine.voice,
+          paint: this.experience.paintStatus(),
         });
       }
     }
@@ -296,7 +320,8 @@ export class App {
     return this.fps.fps * this.skipped.framesPerProcessed;
   }
 
-  private requestMode(mode: CameraMode): void {
+  /** Switches the camera profile. The debug bridge's door too; see StationView. */
+  requestMode(mode: CameraMode): void {
     // Serializing keeps a quick D/F sequence deterministic even while the
     // hardware is still completing the first format change.
     this.modeChange = this.modeChange
@@ -334,9 +359,28 @@ export class App {
       });
   }
 
+  /** Puts the instruments on the glass, or takes them off. */
+  setView(view: StationView): void {
+    if (view === this.view) return;
+    this.view = view;
+    this.presentView();
+  }
+
   private presentMode(): void {
+    // For the CLI, which waits on it after a keystroke. No stylesheet rule
+    // reads it any more: everything that moves on screen is keyed on the view.
     document.body.dataset.cameraMode = this.mode;
-    const debug = this.mode === "debug";
+    // A profile change swaps the video element's picture, so anything holding
+    // measured hit rectangles has to hear about it. See friction 0026.
+    this.experience.relayout();
+  }
+
+  private presentView(): void {
+    document.body.dataset.view = this.view;
+    // The view is on the body, so stylesheet rules keyed on it have just
+    // changed where things are. See friction 0026.
+    this.experience.relayout();
+    const debug = this.view === "debug";
     this.hud.setVisible(debug);
     this.recorder.setVisible(debug);
     this.tasks.setVisible(debug);
@@ -355,6 +399,7 @@ export class App {
       live: this.running,
       voice: this.engine.voice,
       cameraMode: this.mode,
+      view: this.view,
       cameraSource: this.source,
       // Both meters hold a rolling average that never decays, so a dead loop
       // would keep reporting the rate it managed before it died.
@@ -366,6 +411,7 @@ export class App {
       crash: this.lastCrash,
       frame: this.lastFrame,
       cursor: this.lastCursor,
+      paint: this.experience.paintStatus(),
     };
   }
 
@@ -385,6 +431,7 @@ export class App {
   private recordingDiagnostics(): RecordingDiagnostics {
     return {
       cameraMode: this.mode,
+      view: this.view,
       cameraSource: this.source,
       video: { width: this.video.videoWidth, height: this.video.videoHeight },
       viewport: {

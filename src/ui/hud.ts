@@ -1,5 +1,7 @@
-import type { CameraMode } from "../camera/camera.js";
+import type { CameraMode, StationView } from "../camera/camera.js";
+import { CONFIG } from "../config.js";
 import type { CursorState } from "../interaction/cursor.js";
+import type { PaintStatus } from "../interaction/paint-session.js";
 import type { DetectorTimings } from "../perception/engine.js";
 import type { FaceObservation, PerceptionFrame } from "../perception/types.js";
 import type { VoiceStatus } from "../perception/voice.js";
@@ -10,6 +12,8 @@ export interface HudStats {
   mode: CameraMode;
   /** Rate the perception loop achieves, capped by the camera. */
   fps: number;
+  /** What is on the glass. Only ever "debug" here, since that is where the HUD is. */
+  view: StationView;
   /** Rate the camera actually delivers, measured rather than negotiated. */
   capturedFps: number;
   /** What the camera actually negotiated. See describeStream(). */
@@ -18,6 +22,8 @@ export interface HudStats {
   timings: DetectorTimings;
   /** What the ear is doing. See src/perception/voice.ts. */
   voice: VoiceStatus;
+  /** Paint mode, while it is on. Null otherwise. */
+  paint: PaintStatus | null;
 }
 
 /** Below this fraction of the negotiated rate the shortfall is called out. 0.8
@@ -40,7 +46,9 @@ export class Hud {
       .join("  ");
 
     const lines = [
-      `${stats.mode.toUpperCase()} · ${stats.fps.toFixed(0)} fps loop · camera ${stats.camera}`,
+      // The profile by name and by what it negotiated: "camera final 1920x1080@30"
+      // on the debug view is a take being made on the visitor's camera. ADR 0021.
+      `${stats.view.toUpperCase()} · ${stats.fps.toFixed(0)} fps loop · camera ${stats.mode} ${stats.camera}`,
       `delivering ${stats.capturedFps.toFixed(0)} fps${describeShortfall(stats)}`,
       `hands ${stats.timings.hands.toFixed(1)}ms · faces ${stats.timings.faces.toFixed(1)}ms`,
       `hands ${frame.hands.length} · faces ${frame.faces.length}`,
@@ -58,7 +66,8 @@ export class Hud {
         : `cursor ${cursor.position.x.toFixed(2)}, ${cursor.position.y.toFixed(2)} · dwell ${(cursor.dwellProgress * 100).toFixed(0)}%`,
     );
     lines.push(describeVoice(stats.voice));
-    lines.push("D debug · F final");
+    if (stats.paint !== null) lines.push(describePaint(stats.paint));
+    lines.push("D debug · F final · R swap camera · P picture · B paint");
 
     this.root.textContent = lines.join("\n");
   }
@@ -99,6 +108,35 @@ function describeVoice(voice: VoiceStatus): string {
       ? ""
       : ` · ${voice.lastSource === "injected" ? "INJECTED" : "heard"} "${voice.lastText.trim().slice(0, 20)}"`)
   );
+}
+
+/**
+ * The pinch ratio is the number to watch while tuning CONFIG.paint.pinch: hold
+ * the fingers open, then closed, and read where each lands against the two
+ * thresholds. "loose" is a line still open with its ink held back: the fingers
+ * have left contact and the gate is waiting to see whether they come back.
+ */
+function describePaint(paint: PaintStatus): string {
+  // Both rulers, side by side, while the metric one is on trial. ADR 0021.
+  const metres = paint.pinchMetres === null ? "" : ` ${(paint.pinchMetres * 1000).toFixed(0)}mm`;
+  const ratio = paint.pinch === null ? "no hand" : `${paint.pinch.toFixed(2)}${metres}`;
+  const state = paint.painting
+    ? paint.touching
+      ? "painting"
+      : "loose"
+    : paint.pinched
+      ? "pinched"
+      : "open";
+  // A far hand starts its lines on the joints rather than the tips. ADR 0024.
+  const far =
+    paint.handSize !== null && paint.handSize < CONFIG.paint.pinch.farBelow
+      ? ` · far ${paint.handSize.toFixed(2)}`
+      : "";
+  const tool =
+    paint.tool.kind === "erase"
+      ? `eraser ${paint.tool.width.toFixed(3)}`
+      : `${paint.tool.color} ${paint.tool.width.toFixed(3)}`;
+  return `pinch ${ratio} · ${state}${far} · ${tool} · ${paint.strokes} strokes`;
 }
 
 function describeFace(face: FaceObservation): string {

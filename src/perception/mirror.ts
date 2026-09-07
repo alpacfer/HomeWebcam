@@ -1,4 +1,4 @@
-import type { HeadPose, Rect, Vec2 } from "./types.js";
+import type { HeadPose, Rect, Vec2, Vec3 } from "./types.js";
 
 /**
  * The single place the camera-to-screen flip happens.
@@ -11,6 +11,17 @@ import type { HeadPose, Rect, Vec2 } from "./types.js";
 /** Normalized camera-space point -> normalized mirrored screen space. */
 export function toMirroredScreen(p: { x: number; y: number }): Vec2 {
   return { x: 1 - p.x, y: p.y };
+}
+
+/**
+ * Camera-space world landmark (metres, origin at the hand's centre) -> mirrored.
+ *
+ * A reflection in a vertical plane negates x and nothing else. The origin is
+ * the hand's own centre, so there is no "1 -" here: a point 3 cm to the
+ * camera's left of the centre is 3 cm to the screen's right of it.
+ */
+export function toMirroredWorld(p: { x: number; y: number; z: number }): Vec3 {
+  return { x: -p.x, y: p.y, z: p.z };
 }
 
 /**

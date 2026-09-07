@@ -71,9 +71,10 @@ const SCENE: SceneSample = {
     hovered: "picture",
     panels: [
       { id: "picture", rect: { x: 0.4, y: 0.03, width: 0.07, height: 0.13 }, glow: 0.8 },
-      { id: "game", rect: { x: 0.53, y: 0.03, width: 0.07, height: 0.13 }, glow: 0.1 },
+      { id: "paint", rect: { x: 0.53, y: 0.03, width: 0.07, height: 0.13 }, glow: 0.1 },
     ],
   },
+  paint: null,
 };
 
 const NO_CURSOR: CursorState = {
@@ -108,6 +109,7 @@ function build(save = vi.fn(async (_take: RecordingTake) => "a-name-2026-01-01.w
     stream: () => ({}) as MediaStream,
     diagnostics: () => ({
       cameraMode: "debug",
+      view: "debug",
       cameraSource: "1280x720@60",
       video: { width: 1280, height: 720 },
       viewport: { width: 1920, height: 1080, devicePixelRatio: 1 },
@@ -206,6 +208,7 @@ describe("DebugRecorder", () => {
     expect(take.description).toBe("It drops every few s.");
     expect(take.manifest.camera).toEqual({
       mode: "debug",
+      view: "debug",
       source: "1280x720@60",
       error: null,
     });

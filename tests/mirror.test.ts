@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { boxToMirroredScreen, toMirroredScreen } from "../src/perception/mirror.js";
+import {
+  boxToMirroredScreen,
+  toMirroredScreen,
+  toMirroredWorld,
+} from "../src/perception/mirror.js";
 
 describe("toMirroredScreen", () => {
   it("maps the camera's left edge to the screen's right edge", () => {
@@ -65,5 +69,25 @@ describe("boxToMirroredScreen", () => {
   it("survives a zero-sized video without dividing by zero", () => {
     const r = boxToMirroredScreen({ originX: 0, originY: 0, width: 0, height: 0 }, 0, 0);
     expect(Number.isFinite(r.x)).toBe(true);
+  });
+});
+
+describe("toMirroredWorld", () => {
+  it("negates x and nothing else: the origin is the hand's own centre", () => {
+    // 3 cm to the camera's left of the centre is 3 cm to the screen's right of it.
+    expect(toMirroredWorld({ x: 0.03, y: -0.02, z: 0.01 })).toEqual({
+      x: -0.03,
+      y: -0.02,
+      z: 0.01,
+    });
+  });
+
+  it("keeps a distance between two points, which is all the pinch reads off it", () => {
+    const a = toMirroredWorld({ x: 0.01, y: 0.0, z: 0.0 });
+    const b = toMirroredWorld({ x: -0.01, y: 0.01, z: 0.02 });
+    expect(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)).toBeCloseTo(
+      Math.hypot(0.02, 0.01, 0.02),
+      10,
+    );
   });
 });
